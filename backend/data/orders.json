@@ -1,0 +1,122 @@
+[
+    {
+        "order_id": "ORD301",
+        "customer_name": "Rahul Sharma",
+        "customer_phone": "+91 9876541230",
+        "customer_email": "mdkaif11117@gmail.com",
+        "product_id": "HD6976/00",
+        "product_name": "Philips OTG Oven",
+        "status": "Delivered",
+        "purchase_date": "2024-11-10",
+        "warranty_years": 2,
+        "serial_number": "HD6976-IND-88452"
+    },
+    {
+        "order_id": "ORD302",
+        "customer_name": "Sneha Reddy",
+        "customer_phone": "+91 9876567812",
+        "customer_email": "syeda.soha.kousar@gmail.com",
+        "product_id": "TAX5206",
+        "product_name": "Philips Party Speaker 5000",
+        "status": "In-Transit",
+        "purchase_date": "2024-12-01",
+        "warranty_years": 1,
+        "serial_number": "TAX5206-77112"
+    },
+    {
+        "order_id": "ORD303",
+        "customer_name": "Mohammed Kaif",
+        "customer_phone": "+91 9059988771",
+        "customer_email": "249x5a33e4@gmail.com",
+        "product_id": "TB5101",
+        "product_name": "Philips Car Thermal Box",
+        "status": "Delivered",
+        "purchase_date": "2024-09-18",
+        "warranty_years": 1,
+        "serial_number": "TB5101-IND-99321"
+    },
+    {
+        "order_id": "ORD304",
+        "customer_name": "Arjun Kumar",
+        "customer_phone": "+91 9822445566",
+        "customer_email": "mdkaif11117@gmail.com",
+        "product_id": "SPA8000B",
+        "product_name": "Philips 5.1 Speaker System",
+        "status": "In-Transit",
+        "purchase_date": "2024-08-05",
+        "warranty_years": 1,
+        "serial_number": "SPA8000B-IND-56213"
+    },
+    {
+        "order_id": "ORD305",
+        "customer_name": "Rohit Verma",
+        "customer_phone": "+91 9811122233",
+        "customer_email": "syeda.soha.kousar@gmail.com",
+        "product_id": "HD6976/00",
+        "product_name": "Philips OTG Oven",
+        "status": "Delivered",
+        "purchase_date": "2025-01-05",
+        "warranty_years": 2,
+        "serial_number": "HD6976-IND-55231"
+    },
+    {
+        "order_id": "ORD306",
+        "customer_name": "Priya Nair",
+        "customer_phone": "+91 9900776655",
+        "customer_email": "249x5a33e4@gmail.com",
+        "product_id": "TAX5206",
+        "product_name": "Philips Party Speaker 5000 Series",
+        "status": "Delivered",
+        "purchase_date": "2025-01-15",
+        "warranty_years": 1,
+        "serial_number": "TAX5206-88213"
+    },
+    {
+        "order_id": "ORD307",
+        "customer_name": "Abdul Rahman",
+        "customer_phone": "+91 9555112288",
+        "customer_email": "mdkaif11117@gmail.com",
+        "product_id": "TB5101",
+        "product_name": "Philips Car Thermal Box",
+        "status": "In-Transit",
+        "purchase_date": "2024-10-25",
+        "warranty_years": 1,
+        "serial_number": "TB5101-IND-77654"
+    },
+    {
+        "order_id": "ORD308",
+        "customer_name": "Harshitha R",
+        "customer_phone": "+91 7899001122",
+        "customer_email": "syeda.soha.kousar@gmail.com",
+        "product_id": "SPA8000B",
+        "product_name": "Philips 5.1 Home Theater System",
+        "status": "Delivered",
+        "purchase_date": "2024-11-29",
+        "warranty_years": 1,
+        "serial_number": "SPA8000B-IND-33112"
+    },
+    {
+        "order_id": "ORD309",
+        "customer_name": "Kunal Mehta",
+        "customer_phone": "+91 9977554411",
+        "customer_email": "249x5a33e4@gmail.com",
+        "product_id": "HD6976/00",
+        "product_name": "Philips OTG Oven",
+        "status": "Delivered",
+        "purchase_date": "2025-02-01",
+        "warranty_years": 2,
+        "serial_number": "HD6976-IND-66321"
+    },
+    {
+        "order_id": "ORD310",
+        "customer_name": "Neha Patil",
+        "customer_phone": "+91 9988223344",
+        "customer_email": "mdkaif11117@gmail.com",
+        "product_id": "TAX5206",
+        "product_name": "Philips Party Speaker 5000",
+        "status": "Delivered",
+        "purchase_date": "2024-12-20",
+        "warranty_years": 1,
+        "serial_number": "TAX5206-56191"
+    }
+]

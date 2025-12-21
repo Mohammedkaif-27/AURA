@@ -1,0 +1,51 @@
+[
+    {
+        "product_id": "HD6976/00",
+        "name": "Philips OTG Oven",
+        "brand": "Philips",
+        "category": "Oven",
+        "aliases": [
+            "OTG",
+            "Philips Oven",
+            "HD6976",
+            "Philips OTG"
+        ],
+        "warranty_years": 2
+    },
+    {
+        "product_id": "TAX5206",
+        "name": "Philips Party Speaker 5000 Series",
+        "brand": "Philips",
+        "category": "Bluetooth Speaker",
+        "aliases": [
+            "party speaker",
+            "Philips speaker",
+            "TAX"
+        ],
+        "warranty_years": 1
+    },
+    {
+        "product_id": "TB5101",
+        "name": "Philips Car Thermal Box",
+        "brand": "Philips",
+        "category": "Car Appliance",
+        "aliases": [
+            "car cooler",
+            "thermal box",
+            "Philips TB"
+        ],
+        "warranty_years": 1
+    },
+    {
+        "product_id": "SPA8000B",
+        "name": "Philips 5.1 Home Theater System",
+        "brand": "Philips",
+        "category": "Home Audio",
+        "aliases": [
+            "home theater",
+            "5.1 speakers",
+            "spa"
+        ],
+        "warranty_years": 1
+    }
+]

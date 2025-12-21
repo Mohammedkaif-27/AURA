@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html class="light" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AURA – MSME Support Agent</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+        rel="stylesheet" />
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        primary: "#195de6",
+                    },
+                    fontFamily: {
+                        display: ["Inter", "sans-serif"]
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        .chat-message {
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .action-chip {
+            transition: all 0.2s ease;
+        }
+
+        .action-chip:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(25, 93, 230, 0.2);
+        }
+
+        /* Markdown content styling */
+        .markdown-content {
+            color: #1f2937;
+        }
+
+        .markdown-content ul,
+        .markdown-content ol {
+            margin: 0.5em 0;
+            padding-left: 1.5em;
+        }
+
+        .markdown-content ul {
+            list-style-type: disc !important;
+        }
+
+        .markdown-content ol {
+            list-style-type: decimal !important;
+        }
+
+        .markdown-content li {
+            margin: 0.25em 0;
+        }
+
+        .markdown-content strong {
+            font-weight: 600;
+            color: #111827;
+        }
+
+        .markdown-content p {
+            margin: 0.5em 0;
+        }
+
+        .markdown-content p:first-child {
+            margin-top: 0;
+        }
+
+        .markdown-content p:last-child {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div class="flex h-screen overflow-hidden">
+        <!-- Sidebar -->
+        <div class="w-80 bg-white shadow-xl border-r border-gray-200 flex flex-col">
+            <div class="p-6 border-b border-gray-200">
+                <div class="flex items-center space-x-3">
+                    <div
+                        class="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center">
+                        <span class="material-symbols-outlined text-white text-2xl">support_agent</span>
+                    </div>
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-800">AURA</h2>
+                        <p class="text-sm text-gray-500">AI Support Agent</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="p-4 border-b border-gray-200">
+                <h3 class="text-xs font-semibold text-gray-500 uppercase mb-3">Quick Actions</h3>
+                <div class="space-y-2">
+                    <button onclick="sendQuickMessage('I need help with my order')"
+                        class="action-chip w-full text-left px-4 py-3 bg-blue-50 hover:bg-blue-100 rounded-lg text-sm font-medium text-blue-700 flex items-center space-x-2">
+                        <span class="material-symbols-outlined text-lg">shopping_bag</span>
+                        <span>Order Help</span>
+                    </button>
+                    <button onclick="sendQuickMessage('I need a refund')"
+                        class="action-chip w-full text-left px-4 py-3 bg-green-50 hover:bg-green-100 rounded-lg text-sm font-medium text-green-700 flex items-center space-x-2">
+                        <span class="material-symbols-outlined text-lg">payments</span>
+                        <span>Request Refund</span>
+                    </button>
+                    <button onclick="sendQuickMessage('My product is not working')"
+                        class="action-chip w-full text-left px-4 py-3 bg-orange-50 hover:bg-orange-100 rounded-lg text-sm font-medium text-orange-700 flex items-center space-x-2">
+                        <span class="material-symbols-outlined text-lg">build</span>
+                        <span>Troubleshoot</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Help Section -->
+            <div class="flex-1 overflow-y-auto p-4">
+                <h3 class="text-xs font-semibold text-gray-500 uppercase mb-3">Need Help?</h3>
+                <div class="bg-blue-50 rounded-lg p-4 text-sm text-gray-700">
+                    <p class="mb-2">💡 You can ask me about:</p>
+                    <ul class="space-y-1 text-xs">
+                        <li>• Order status</li>
+                        <li>• Product information</li>
+                        <li>• Refunds & returns</li>
+                        <li>• Troubleshooting</li>
+                        <li>• Service booking</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="flex-1 flex flex-col">
+            <!-- Header -->
+            <div class="bg-white shadow-md p-6 border-b border-gray-200">
+                <h1 class="text-2xl font-bold text-gray-800">AURA – MSME Support Agent</h1>
+                <p class="text-sm text-gray-500 mt-1">Ask me anything about your orders, products, or services</p>
+            </div>
+
+            <!-- Chat Messages -->
+            <div id="chatContainer" class="flex-1 overflow-y-auto p-6 space-y-4">
+                <!-- Welcome Message -->
+                <div class="chat-message flex items-start space-x-3">
+                    <div
+                        class="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center flex-shrink-0">
+                        <span class="material-symbols-outlined text-white text-lg">smart_toy</span>
+                    </div>
+                    <div class="bg-white rounded-2xl rounded-tl-none shadow-md p-4 max-w-2xl">
+                        <p class="text-gray-800">👋 Hello! I'm AURA, your AI support assistant. How can I help you
+                            today?</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="bg-white border-t border-gray-200 p-4">
+                <div class="max-w-4xl mx-auto">
+                    <div class="flex items-end space-x-3">
+                        <div class="flex-1 bg-gray-100 rounded-2xl p-3">
+                            <textarea id="messageInput" rows="1" placeholder="Ask AURA..."
+                                class="w-full bg-transparent border-none resize-none focus:outline-none text-gray-800 placeholder-gray-400"
+                                onkeydown="handleKeyPress(event)"></textarea>
+                        </div>
+                        <button onclick="sendMessage()" id="sendButton"
+                            class="bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white rounded-2xl px-6 py-3 font-medium transition-all duration-200 flex items-center space-x-2 shadow-lg hover:shadow-xl">
+                            <span>Send</span>
+                            <span class="material-symbols-outlined">send</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Session state (replaces Streamlit session_state)
+        let messages = [];
+
+        // Generate new session_id on every page load (fresh conversation)
+        let sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        console.log('Generated new session ID:', sessionId);
+
+        // Auto-resize textarea
+        const messageInput = document.getElementById('messageInput');
+        messageInput.addEventListener('input', function () {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+        });
+
+        // Handle Enter key (send on Enter, newline on Shift+Enter)
+        function handleKeyPress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+
+        // Send message function
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            // Clear input
+            input.value = '';
+            input.style.height = 'auto';
+
+            // Add user message to UI
+            addMessageToUI('user', message);
+
+            // Disable send button
+            const sendButton = document.getElementById('sendButton');
+            sendButton.disabled = true;
+            sendButton.classList.add('opacity-50', 'cursor-not-allowed');
+
+            // Show typing indicator
+            const typingId = showTypingIndicator();
+
+            try {
+                // Call backend API
+                const response = await fetch('http://127.0.0.1:8000/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        session_id: sessionId
+                    })
+                });
+
+                const data = await response.json();
+
+                // Remove typing indicator
+                removeTypingIndicator(typingId);
+
+                // Add assistant response to UI
+                addMessageToUI('assistant', data.answer || data.reply || 'Sorry, I couldn\'t process that.');
+
+                // Save to messages array
+                messages.push({ role: 'user', content: message });
+                messages.push({ role: 'assistant', content: data.answer || data.reply });
+
+            } catch (error) {
+                removeTypingIndicator(typingId);
+                addMessageToUI('assistant', '❌ Error: Could not connect to the backend. Please make sure the server is running on http://127.0.0.1:8000');
+                console.error('Error:', error);
+            } finally {
+                // Re-enable send button
+                sendButton.disabled = false;
+                sendButton.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        // Quick message sender
+        function sendQuickMessage(message) {
+            document.getElementById('messageInput').value = message;
+            sendMessage();
+        }
+
+        // Add message to UI
+        function addMessageToUI(role, content) {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'chat-message flex items-start space-x-3';
+
+            if (role === 'user') {
+                messageDiv.classList.add('flex-row-reverse', 'space-x-reverse');
+                messageDiv.innerHTML = `
+                    <div class="w-10 h-10 bg-gradient-to-br from-gray-500 to-gray-700 rounded-full flex items-center justify-center flex-shrink-0">
+                        <span class="material-symbols-outlined text-white text-lg">person</span>
+                    </div>
+                    <div class="bg-blue-600 text-white rounded-2xl rounded-tr-none shadow-md p-4 max-w-2xl">
+                        <p>${escapeHtml(content)}</p>
+                    </div>
+                `;
+            } else {
+                // Parse markdown for assistant messages
+                const htmlContent = marked.parse(content);
+                messageDiv.innerHTML = `
+                    <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center flex-shrink-0">
+                        <span class="material-symbols-outlined text-white text-lg">smart_toy</span>
+                    </div>
+                    <div class="bg-white rounded-2xl rounded-tl-none shadow-md p-4 max-w-2xl markdown-content">
+                        ${htmlContent}
+                    </div>
+                `;
+            }
+
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Show typing indicator
+        function showTypingIndicator() {
+            const chatContainer = document.getElementById('chatContainer');
+            const typingDiv = document.createElement('div');
+            const id = `typing-${Date.now()}`;
+            typingDiv.id = id;
+            typingDiv.className = 'chat-message flex items-start space-x-3';
+            typingDiv.innerHTML = `
+                <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center flex-shrink-0">
+                    <span class="material-symbols-outlined text-white text-lg">smart_toy</span>
+                </div>
+                <div class="bg-white rounded-2xl rounded-tl-none shadow-md p-4">
+                    <div class="flex space-x-2">
+                        <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                        <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0.1s"></div>
+                        <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
+                    </div>
+                </div>
+            `;
+            chatContainer.appendChild(typingDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return id;
+        }
+
+        // Remove typing indicator
+        function removeTypingIndicator(id) {
+            const element = document.getElementById(id);
+            if (element) {
+                element.remove();
+            }
+        }
+
+        // Escape HTML to prevent XSS
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        // Focus input on load
+        window.addEventListener('load', () => {
+            document.getElementById('messageInput').focus();
+        });
+    </script>
+</body>
+
+</html>

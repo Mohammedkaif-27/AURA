@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# ChromaDB
+backend/chroma_db/
+chroma_db/
+
+# Google Cloud credentials
+backend/service_account.json
+service_account.json
+*.json
+!backend/data/*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+
+# Node modules (if any)
+node_modules/
+
+# Build artifacts
+.antigravity*
+
+# Sensitive data
+backend/data/refunds.json
+backend/data/replacements.json
+backend/data/service_bookings.json

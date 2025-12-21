@@ -1,0 +1,17 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.env.local
+.vscode/
+*.log
+backend/__pycache__/
+backend/chroma_db/
+.antigravity*
+*.md
+DEPLOYMENT.md
+README.md

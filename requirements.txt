@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+streamlit
+requests
+google-genai
+python-dotenv
+chromadb
+pypdf
+google-cloud-aiplatform
