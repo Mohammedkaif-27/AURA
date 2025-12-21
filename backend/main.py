@@ -50,6 +50,17 @@ async def startup_event():
     logger.info("AURA Backend is ready!")
 
 
+@app.get("/")
+def root():
+    """Root endpoint - redirects to health"""
+    return {
+        "message": "AURA Backend API",
+        "version": "1.0.0",
+        "health_check": "/health",
+        "chat_endpoint": "/chat"
+    }
+
+
 @app.get("/health")
 def health():
     """Health check endpoint"""
@@ -96,4 +107,9 @@ async def chat(request: ChatRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    
+    # Use PORT from environment variable (Cloud Run sets this)
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+

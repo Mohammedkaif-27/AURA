@@ -1,9 +1,24 @@
-fastapi
-uvicorn
-streamlit
-requests
-google-genai
-python-dotenv
-chromadb
-pypdf
-google-cloud-aiplatform
+# FastAPI and web server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# Frontend (optional, not used in Cloud Run deployment)
+streamlit>=1.28.0
+
+# HTTP client
+requests>=2.31.0
+
+# Google Cloud and AI
+google-genai>=0.3.0
+google-cloud-aiplatform>=1.38.0
+vertexai>=1.38.0
+
+# Environment and configuration
+python-dotenv>=1.0.0
+
+# Vector database and RAG
+chromadb>=0.4.18
+
+# PDF processing
+pypdf>=3.17.0

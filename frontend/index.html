@@ -241,8 +241,8 @@
             const typingId = showTypingIndicator();
 
             try {
-                // Call backend API
-                const response = await fetch('http://127.0.0.1:8000/chat', {
+                // Call backend API - Cloud Run deployment
+                const response = await fetch('https://aura-backend-794773815894.us-central1.run.app/chat', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -267,7 +267,7 @@
 
             } catch (error) {
                 removeTypingIndicator(typingId);
-                addMessageToUI('assistant', '❌ Error: Could not connect to the backend. Please make sure the server is running on http://127.0.0.1:8000');
+                addMessageToUI('assistant', '❌ Error: Could not connect to the backend. Please check your internet connection or contact support.');
                 console.error('Error:', error);
             } finally {
                 // Re-enable send button

@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+*.egg-info/
+
+# Git
+.git/
+.gitignore
+.github/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+
+# ChromaDB cache (will be rebuilt)
+backend/chroma_db/
+chroma_db/
+
+# Google Cloud credentials (use Workload Identity on Cloud Run)
+backend/service_account.json
+service_account.json
+*.json
+!backend/data/orders.json
+!backend/data/products.json
+
+# Sensitive runtime data (excluded, will be created at runtime)
+backend/data/refunds.json
+backend/data/replacements.json
+backend/data/service_bookings.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+
+# Artifacts and development files
+.antigravity*
+*.md
+!README.md
+
+# Node modules
+node_modules/
+
+# Build artifacts
+dist/
+build/
+
+# Frontend (backend-only deployment)
+frontend/
+
+# Scripts
+*.ps1
+*.sh
+
+# Cloud config
+.gcloudignore

@@ -12,6 +12,6 @@ venv/
 backend/__pycache__/
 backend/chroma_db/
 .antigravity*
-*.md
-DEPLOYMENT.md
-README.md
+frontend/
+*.ps1
+push_to_github.ps1

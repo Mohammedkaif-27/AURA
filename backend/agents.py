@@ -15,18 +15,22 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 PROJECT_ID = os.getenv("PROJECT_ID")
-REGION = os.getenv("REGION")
-CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+REGION = os.getenv("REGION", "asia-south1")
 
 # Initialize Vertex AI with error handling
+# On Cloud Run, authentication happens automatically via Workload Identity
+# No need to set GOOGLE_APPLICATION_CREDENTIALS
 try:
+    if not PROJECT_ID:
+        raise ValueError("PROJECT_ID environment variable is required")
+    
     aiplatform.init(
         project=PROJECT_ID,
         location=REGION
     )
     # Try using Gemini 2.0 Flash which is generally available
     model = GenerativeModel("gemini-2.0-flash-001")
-    logger.info("Vertex AI initialized successfully")
+    logger.info(f"Vertex AI initialized successfully (Project: {PROJECT_ID}, Region: {REGION})")
 except Exception as e:
     logger.error(f"ERROR: Failed to initialize Vertex AI: {e}")
     model = None
