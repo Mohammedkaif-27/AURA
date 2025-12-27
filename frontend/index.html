@@ -113,6 +113,14 @@
             transform: translateX(-100%);
         }
 
+        /* Force sidebar visible on desktop (lg breakpoint: 1024px+) */
+        @media (min-width: 1024px) {
+            #sidebar {
+                transform: translateX(0) !important;
+                position: relative !important;
+            }
+        }
+
         /* Overlay for mobile sidebar */
         #sidebarOverlay {
             transition: opacity 0.3s ease-in-out;
