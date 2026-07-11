@@ -11,9 +11,10 @@ ENV/
 dist/
 build/
 
-# Environment variables
+# Environment variables (NEVER commit these)
 .env
 .env.local
+.env.*.local
 
 # IDE
 .vscode/
@@ -29,12 +30,6 @@ build/
 backend/chroma_db/
 chroma_db/
 
-# Google Cloud credentials
-backend/service_account.json
-service_account.json
-*.json
-!backend/data/*.json
-
 # OS
 .DS_Store
 Thumbs.db
@@ -44,7 +39,7 @@ Thumbs.db
 *.bak
 *.swp
 
-# Node modules (if any)
+# Node modules
 node_modules/
 
 # Build artifacts
@@ -54,3 +49,6 @@ node_modules/
 backend/data/refunds.json
 backend/data/replacements.json
 backend/data/service_bookings.json
+
+# Model cache (sentence-transformers downloads)
+.cache/

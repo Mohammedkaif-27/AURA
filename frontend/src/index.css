@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── Minimalist palette: one accent, neutral grays ── */
+  --color-accent: #2563eb;
+  --color-accent-light: #eff6ff;
+  --color-accent-hover: #1d4ed8;
+
+  --color-bg: #ffffff;
+  --color-bg-secondary: #f9fafb;
+  --color-bg-tertiary: #f3f4f6;
+
+  --color-text-primary: #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-muted: #9ca3af;
+
+  --color-border: #e5e7eb;
+  --color-border-focus: #2563eb;
+
+  --color-danger: #dc2626;
+  --color-success: #16a34a;
+}
+
+/* ── Base ───────────────────────────────────────────── */
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* ── Scrollbar (subtle) ──────────────────────────────── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+
+/* ── Typing cursor ───────────────────────────────────── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+
+.typing-cursor::after {
+  content: '▋';
+  animation: blink 0.8s step-end infinite;
+  color: var(--color-accent);
+  margin-left: 1px;
+}
+
+/* ── Message entrance (subtle) ───────────────────────── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.msg-enter {
+  animation: fade-in 0.2s ease-out;
+}

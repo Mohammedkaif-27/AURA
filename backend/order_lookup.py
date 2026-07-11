@@ -30,24 +30,27 @@ def load_orders() -> list:
         return []
 
 
+from . import supabase_client
+
 def get_order_by_id(order_id: str) -> Optional[Dict[str, Any]]:
-    """Fetch order details by order_id"""
+    """Fetch order details by order_id from Supabase"""
     try:
         # Normalize order_id (remove spaces, uppercase)
         order_id_clean = order_id.strip().upper()
         
-        orders = load_orders()
+        # Use Supabase directly instead of local JSON
+        order = supabase_client.get_order_by_id_db(order_id_clean)
         
-        for order in orders:
-            if order.get("order_id", "").upper() == order_id_clean:
-                logger.info(f"Found order: {order_id}")
-                return order
-        
-        logger.warning(f"WARNING: Order not found: {order_id}")
+        if order:
+            logger.info(f"Found order in DB: {order_id_clean}")
+            return order
+            
+        logger.warning(f"WARNING: Order not found in DB: {order_id_clean}")
         return None
         
     except Exception as e:
-        logger.error(f"ERROR: Error fetching order: {e}")
+        logger.error(f"ERROR: Error fetching order {order_id}: {e}")
+        return None
         return None
 
 
@@ -96,7 +99,7 @@ def get_order_summary(order: Dict[str, Any]) -> str:
     try:
         summary = f"""
 Order Details:
-- Order ID: {order.get('order_id', 'N/A')}
+- Order ID: {order.get('id', 'N/A')}
 - Customer: {order.get('customer_name', 'N/A')}
 - Product: {order.get('product_name', 'N/A')}
 - Model: {order.get('product_id', 'N/A')}

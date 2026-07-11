@@ -1,3 +1,15 @@
+"""
+AURA Orchestrator — Coordinates the agent pipeline for each user message.
+
+OPTIMIZED:
+- Single RAG search (was doing two separate calls).
+- Greetings skip RAG entirely (< 500ms response).
+- Verifier disabled by default.
+- Structured logging: one summary line per request.
+- All LLM call count reduced to 1 (responder only).
+"""
+
+import time
 import logging
 from .agents import (
     intent_agent,
@@ -6,48 +18,44 @@ from .agents import (
     verifier_agent,
     action_agent,
     action_confirmation_agent,
-    execute_action
+    execute_action,
+    should_use_rag,
 )
+from .rag import search_knowledge_with_metadata
 from . import notifications
 from . import session_manager
 from . import order_lookup
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def process_message(message, session_id=None):
-    """Process user message through the AURA agent pipeline with session memory
-    
-    Flow: Session Check → Order Lookup → Intent → Retrieval → Responder → Verifier → Action → Execution → Notification
+def process_message(message: str, session_id: str = None, user: dict = None) -> dict:
+    """Process user message through the AURA agent pipeline with session memory.
+
+    Flow: Session → Order Lookup → Intent (deterministic) → RAG (conditional)
+          → Responder (1 LLM call) → Action → Execution → Notification
     """
     try:
+        request_start = time.time()
+
         # Generate session_id if not provided
         if not session_id:
             import uuid
             session_id = f"session_{uuid.uuid4().hex[:12]}"
-        
-        logger.info(f"Processing message: {message[:50]}... | Session: {session_id}")
-        
+
         # Get or create session
-        session = session_manager.get_session(session_id)
-        
+        session = session_manager.get_session(session_id, user)
+
         # Add user message to conversation history
-        session_manager.add_to_conversation_history(session_id, "user", message)
-        
+        session_manager.add_to_conversation_history(session_id, "user", message, user)
+
         # Check for order_id in message
         extracted_order_id = order_lookup.extract_order_id_from_message(message)
         if extracted_order_id:
-            logger.info(f"Detected order ID: {extracted_order_id}")
-            
-            # Fetch order details
             order_data = order_lookup.get_order_by_id(extracted_order_id)
-            
             if order_data:
-                # Store order data in session
                 session_manager.update_session_bulk(session_id, {
-                    "order_id": order_data.get("order_id"),
+                    "order_id": order_data.get("id"),
                     "customer_name": order_data.get("customer_name"),
                     "customer_email": order_data.get("customer_email"),
                     "customer_phone": order_data.get("customer_phone"),
@@ -55,208 +63,290 @@ def process_message(message, session_id=None):
                     "product_name": order_data.get("product_name"),
                     "serial_number": order_data.get("serial_number"),
                     "purchase_date": order_data.get("purchase_date"),
-                    "warranty_years": order_data.get("warranty_years")
+                    "warranty_years": order_data.get("warranty_years"),
+                    "status": order_data.get("status")
                 })
-                logger.info(f"Order data stored in session for {order_data.get('customer_name')}")
-            else:
-                logger.warning(f"WARNING: Order {extracted_order_id} not found")
-        
-        # NEW: Extract reason or datetime from message (if Order ID already exists)
+
+        # Extract reason or datetime from message (if Order ID already exists)
         if session.get("order_id") and not session.get("reason_for_action"):
-            # If user is providing reason (not asking a question), store it
             if len(message) > 10 and not message.strip().endswith("?"):
                 session_manager.update_session(session_id, "reason_for_action", message.strip())
-                logger.info(f"Stored reason: {message[:50]}...")
-        
+
         if session.get("order_id") and not session.get("preferred_datetime"):
-            # Simple datetime detection (user mentioning dates/times)
-            datetime_keywords = ["tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "next week", "pm", "am", "december", "january"]
+            datetime_keywords = ["tomorrow", "monday", "tuesday", "wednesday", "thursday",
+                                 "friday", "saturday", "sunday", "next week", "pm", "am",
+                                 "december", "january"]
             if any(keyword in message.lower() for keyword in datetime_keywords):
                 session_manager.update_session(session_id, "preferred_datetime", message.strip())
-                logger.info(f"Stored preferred datetime: {message[:50]}...")
-        
+
         # Get session context for agents
         session_context = session_manager.get_session_context(session_id)
-        
-        # 1. Intent Agent - Classify user intent
-        try:
-            intent = intent_agent(message)
-            logger.info(f"Intent: {intent}")
-        except Exception as e:
-            logger.error(f"Intent agent failed: {e}")
-            intent = "general_query"
 
-        # 2. Retrieval Agent - Get relevant context from knowledge base
-        try:
-            context = retrieval_agent(message)
-            logger.info(f"Retrieved context: {len(context)} chars")
-        except Exception as e:
-            logger.error(f"Retrieval agent failed: {e}")
-            context = ""
+        # ── 1. Intent (DETERMINISTIC — no LLM call) ──
+        intent = intent_agent(message)
 
-        # DETERMINISTIC FLOW CONTROLLER - Bypass LLM if info is complete
+        # Inherit intent if we have a pending action and the user didn't explicitly change topics
+        pending_action = session.get("pending_action")
+        if pending_action and intent == "general_query":
+            action_to_intent = {
+                "initiate_refund": "refund",
+                "initiate_replacement": "replacement",
+                "book_service": "service_booking"
+            }
+            if pending_action in action_to_intent:
+                intent = action_to_intent[pending_action]
+                logger.info(f"Inherited intent from pending action: {intent}")
+
+        # ── 2. RAG Retrieval (CONDITIONAL — skipped for greetings) ──
+        context = ""
+        sources_metadata = []
+        use_rag = should_use_rag(message, intent)
+
+        search_ms = 0
+        llm_ms = 0
+
+        search_start = time.time()
+        if use_rag:
+            try:
+                # Single consolidated search (was previously two separate calls)
+                sources_metadata = search_knowledge_with_metadata(message, k=5)
+                context = "\n\n".join(src["text"] for src in sources_metadata) if sources_metadata else ""
+
+                # ── PHASE 1 DIAGNOSTIC: Retrieval transparency logging ──
+                logger.info("=" * 80)
+                logger.info(f"QUERY: {message}")
+                logger.info(f"RESULTS: {len(sources_metadata)} chunks retrieved")
+                for i, src in enumerate(sources_metadata):
+                    logger.info(f"\n--- Chunk {i + 1} ---")
+                    logger.info(f"  Source: {src.get('source', 'unknown')}")
+                    logger.info(f"  Page: {src.get('page', '?')}")
+                    logger.info(f"  Distance: {src.get('distance', 'N/A')}")
+                    logger.info(f"  Rerank Score: {src.get('rerank_score', 'N/A')}")
+                    logger.info(f"  Text: {src.get('text', '')[:600]}")
+                logger.info("=" * 80)
+            except Exception as e:
+                logger.error(f"Retrieval failed: {e}")
+        search_ms = (time.time() - search_start) * 1000
+
+        # ── 2b. Policy Injection ──
+        # Inject policies for related intents so the LLM can answer general questions
+        if intent in ["refund", "replacement", "warranty", "general_query"]:
+            from . import supabase_client
+            policies = supabase_client.get_policies()
+            if policies:
+                policy_texts = []
+                for p in policies:
+                    ptype = p.get('policy_type', '').capitalize()
+                    scope = p.get('scope', 'global')
+                    cat = p.get('category')
+                    desc = p.get('description', '')
+                    label = f"[{ptype} Policy - {scope.capitalize()}{' ('+cat+')' if cat else ''}]"
+                    policy_texts.append(f"{label}\n{desc}")
+                
+                if policy_texts:
+                    policy_block = "\n\n--- COMPANY POLICIES ---\n" + "\n\n".join(policy_texts)
+                    context = (context + policy_block).strip()
+
+        # ── DETERMINISTIC FLOW CONTROLLER ──
+        # Bypass LLM if we have complete order info and an action intent
         should_skip_to_action = False
-        
-        # Check if we have complete order info and action intent
-        if session.get("order_id") and intent in ["initiate_refund", "initiate_replacement", "book_service"]:
-            logger.info("Flow Controller: Info complete + action intent detected -> Skipping to action")
-            should_skip_to_action = True
+
+        if session.get("order_id") and intent in ["refund", "replacement", "service_booking"]:
+            from . import supabase_client
+            from datetime import datetime
             
-            # Generate deterministic confirmation message
             customer_name = session.get("customer_name", "Customer")
             product_name = session.get("product_name", "your product")
             order_id = session.get("order_id")
-            
-            action_labels = {
-                "initiate_refund": "refund",
-                "initiate_replacement": "replacement",
-                "book_service": "service appointment"
-            }
-            action_label = action_labels.get(intent, "request")
-            
-            draft_response = f"Thank you, {customer_name}. I understand you'd like to proceed with a {action_label} for {product_name} (Order ID: {order_id}).\n\n"
-            draft_response += f"I'm processing your {action_label} request now. Please wait a moment..."
-            
-            verified_response = draft_response
-        
-        else:
-            # 3. Responder Agent - Generate draft response (with session context)
-            try:
-                # Inject session context into responder
-                draft_response = responder_agent(context, message, session_context)
-                logger.info(f"Draft response generated ({len(draft_response)} chars)")
-            except Exception as e:
-                logger.error(f"Responder agent failed: {e}")
-                draft_response = "I apologize, but I'm experiencing technical difficulties. Please try again later."
+            purchase_date = session.get("purchase_date")
+            product_id = session.get("product_id")
 
-            # 4. Verifier Agent - Verify response quality and correctness
+            # ── NEW: Deterministic Policy Enforcement ──
+            policy_rejected_msg = None
+            if intent in ["refund", "replacement"] and purchase_date:
+                # 1. Fetch product to get category
+                product_data = supabase_client.get_product_by_id(product_id) if product_id else None
+                category = product_data.get("category", "") if product_data else ""
+                
+                # 2. Resolve policy
+                policy = supabase_client.resolve_policy(category, intent)
+                
+                # 3. Enforce window_days rule
+                if policy and policy.get("rules"):
+                    window_days = policy["rules"].get("window_days")
+                    if window_days is not None:
+                        try:
+                            # Handle ISO format dates which might only have YYYY-MM-DD
+                            date_str = purchase_date.split("T")[0]
+                            p_date = datetime.strptime(date_str, "%Y-%m-%d")
+                            days_since = (datetime.now() - p_date).days
+                            if days_since > window_days:
+                                # Reject!
+                                action_label = "refund" if intent == "refund" else "replacement"
+                                policy_rejected_msg = (
+                                    f"I apologize, {customer_name}, but I cannot process a {action_label} for "
+                                    f"{product_name}. Our policy for this item allows {action_label}s within "
+                                    f"{window_days} days of purchase, and this order is {days_since} days old."
+                                )
+                        except Exception as e:
+                            logger.error(f"Error parsing date for policy check: {e}")
+
+            if policy_rejected_msg:
+                # Bypass to a rejection response without triggering action
+                should_skip_to_action = False
+                verified_response = policy_rejected_msg
+                # Reset intent so action agent doesn't trigger
+                intent = "general_query"
+            else:
+                should_skip_to_action = True
+                action_labels = {
+                    "refund": "refund",
+                    "replacement": "replacement",
+                    "service_booking": "service appointment"
+                }
+                action_label = action_labels.get(intent, "request")
+
+                verified_response = (
+                    f"Thank you, {customer_name}. I understand you'd like to proceed with "
+                    f"a {action_label} for {product_name} (Order ID: {order_id}).\n\n"
+                    f"I'm processing your {action_label} request now. Please wait a moment..."
+                )
+
+        else:
+            # ── 3. Responder (THE ONLY LLM CALL) ──
+            llm_start = time.time()
+            try:
+                draft_response = responder_agent(context, message, session_context)
+            except Exception as e:
+                logger.error(f"Responder failed: {e}")
+                draft_response = "I apologize, but I'm experiencing technical difficulties. Please try again later."
+            llm_ms = (time.time() - llm_start) * 1000
+
+            # ── 4. Verifier (DISABLED by default) ──
             try:
                 verified_response = verifier_agent(draft_response, context)
-                logger.info("Response verified")
             except Exception as e:
-                logger.error(f"Verifier agent failed: {e}")
+                logger.error(f"Verifier failed: {e}")
                 verified_response = draft_response
 
+        # ── 5. Action Agent (DETERMINISTIC) ──
+        action = action_agent(intent, verified_response)
 
-        # 5. Action Agent - Decide if operational action is needed
-        try:
-            action = action_agent(intent, verified_response)
-            logger.info(f"Action decided: {action}")
-        except Exception as e:
-            logger.error(f"Action agent failed: {e}")
-            action = "none"
-
-        # 6. Action Confirmation - Get user consent (optional)
+        # ── 6. Action Confirmation (TEMPLATE — no LLM) ──
         confirmation_message = None
         if action != "none":
-            try:
-                confirmation_message = action_confirmation_agent(action)
-                logger.info(f"Confirmation message: {confirmation_message[:50] if confirmation_message else 'None'}...")
-            except Exception as e:
-                logger.error(f"Action confirmation failed: {e}")
+            confirmation_message = action_confirmation_agent(action)
 
-        # 7. Action Execution - Execute if needed
+        # ── 7. Action Execution ──
         action_result = None
-        email_result = None
-        
+
         if action != "none":
+            # Save pending action in session so we don't forget it on the next turn
+            session_manager.update_session(session_id, "pending_action", action)
+            
             try:
-                # NEW: Check if we need to collect more information
                 info_status = session_manager.check_missing_info_for_action(session_id, action)
-                
+
                 if not info_status["complete"]:
-                    # Information is incomplete - ask for what's missing
-                    logger.info(f"Missing information for '{action}': {info_status['missing']}")
-                    verified_response = info_status["prompt"]
-                    action = "none"  # Don't execute yet
-                    
+                    # Append the prompt instead of completely overwriting the LLM's answer
+                    # This ensures policy questions (e.g., "what's your refund policy?") still get answered
+                    if verified_response and len(message) > 10 and "?" in message:
+                        verified_response = f"{verified_response}\n\n{info_status['prompt']}"
+                    else:
+                        verified_response = info_status["prompt"]
+                    action = "none"
                 else:
-                    # All information collected - proceed with execution
-                    logger.info(f"All information collected for '{action}' - executing")
+                    # Clear pending action because we have all info and are executing it now
+                    session_manager.update_session(session_id, "pending_action", None)
                     
-                    # Use session data for user details
                     user_details = {
-                        "email": session.get("customer_email"),
+                        "email": session.get("customer_email") or (user.get("email") if user else None),
                         "name": session.get("customer_name"),
                         "product_name": session.get("product_name"),
                         "order_id": session.get("order_id"),
-                        "phone": session.get("customer_phone") or ""
+                        "phone": session.get("customer_phone") or "",
+                        "scheduled_date": session.get("preferred_datetime", "TBD"),
+                        "time_slot": "As requested" if session.get("preferred_datetime") else "TBD"
                     }
-                    
-                    # Execute the action
+
                     action_result = execute_action(action, user_details)
-                    
-                    # Build CLEAN confirmation message (NO technical details)
+
                     if action_result and action_result.get("status") == "success":
                         action_id = action_result.get("action_id")
-                        
-                        # Map action to human-readable label
+
                         action_labels = {
                             "initiate_refund": "refund",
                             "initiate_replacement": "replacement",
                             "book_service": "service appointment"
                         }
                         action_label = action_labels.get(action, "request")
-                        
-                        # CLEAN, MINIMAL confirmation message
-                        verified_response = f"Your {action_label} request has been processed.\n\n"
-                        verified_response += f"**Request ID:** {action_id}\n\n"
-                        verified_response += f"You'll receive confirmation via email shortly."
-                        
-                        # Send email in BACKGROUND (user doesn't see this)
+
+                        verified_response = (
+                            f"Your {action_label} request has been processed.\n\n"
+                            f"**Request ID:** {action_id}\n\n"
+                            f"You'll receive confirmation via email shortly."
+                        )
+
+                        # Send email notification in background
                         user_email = user_details.get("email")
                         product_name = user_details.get("product_name", "Your Product")
-                        
+
                         try:
                             if action == "initiate_refund":
-                                email_result = notifications.send_refund_confirmation_email(action_id, product_name, user_email)
+                                notifications.send_refund_confirmation_email(action_id, product_name, user_email)
                             elif action == "initiate_replacement":
-                                email_result = notifications.send_replacement_confirmation_email(action_id, product_name, user_email)
+                                notifications.send_replacement_confirmation_email(action_id, product_name, user_email)
                             elif action == "book_service":
                                 booking_details = action_result.get("data", {})
-                                email_result = notifications.send_service_booking_confirmation_email(action_id, booking_details, user_email)
-                            
-                            # Log email result (but don't show user)
-                            if email_result and email_result.get("success"):
-                                logger.info(f"Email sent successfully to {user_email}")
-                            else:
-                                logger.warning(f"Email sending issue: {email_result}")
+                                notifications.send_service_booking_confirmation_email(action_id, booking_details, user_email)
                         except Exception as e:
-                            # Log error but don't show user
-                            logger.error(f"Email sending failed: {e}")
-                        
-                        # Mark action as completed in session
+                            logger.error(f"Email notification failed: {e}")
+
                         session_manager.mark_action_completed(session_id, action_id, action)
-                    
+
             except Exception as e:
                 logger.error(f"Action execution failed: {e}", exc_info=True)
                 action_result = {"status": "failed", "error": str(e)}
-                verified_response += f"\n\nI apologize, but I encountered an error processing your request. Please try again or contact support directly."
+                verified_response += "\n\nI apologize, but I encountered an error processing your request. Please try again or contact support directly."
 
+        # Build source citations for the UI
+        citations = [
+            {
+                "source": src.get("source", "unknown"),
+                "page": src.get("page", 0),
+                "chunk_index": src.get("chunk_index", 0),
+            }
+            for src in sources_metadata
+        ]
 
-        # Add assistant response to conversation history
-        session_manager.add_to_conversation_history(session_id, "assistant", verified_response)
+        # Persist assistant response
+        session_manager.add_to_conversation_history(session_id, "assistant", verified_response, user, citations)
 
-        # Prepare result
-        result = {
+        # ── Structured request log ──
+        total_ms = (time.time() - request_start) * 1000
+        logger.info(
+            f"[PERF] session={session_id[:20]} intent={intent} rag={'yes' if use_rag else 'skip'} "
+            f"search_ms={search_ms:.0f} llm_ms={llm_ms:.0f} total_ms={total_ms:.0f}"
+        )
+
+        return {
             "answer": verified_response,
             "intent": intent,
-            "rag_sources": context[:500],  # Truncate for debug panel
+            "rag_sources": context[:500],
+            "sources": citations,
             "action": action,
             "action_confirmation": confirmation_message,
             "action_log": action_result,
             "session_id": session_id
         }
-        
-        logger.info("Message processed successfully")
-        return result
-        
+
     except Exception as e:
-        logger.error(f"ERROR: Critical error in process_message: {e}", exc_info=True)
+        logger.error(f"Critical error in process_message: {e}", exc_info=True)
         return {
             "answer": "I apologize, but I encountered an error processing your request. Please try again.",
             "intent": "error",
             "rag_sources": "",
+            "sources": [],
             "action": "none",
             "action_confirmation": None,
             "action_log": None,

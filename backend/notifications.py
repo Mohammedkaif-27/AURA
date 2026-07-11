@@ -20,40 +20,63 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "noreply@aura-support.com")
 
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").lower()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 
 def send_email(to_email: str, subject: str, html_content: str) -> dict:
-    """Send email using SMTP - Returns detailed status"""
+    """Send email using SMTP or Resend - Returns detailed status"""
     try:
-        if not SMTP_USERNAME or not SMTP_PASSWORD:
-            logger.warning("WARNING: Email credentials not configured. Email not sent.")
+        if EMAIL_PROVIDER == "resend":
+            if not RESEND_API_KEY:
+                logger.error("Resend API key missing")
+                return {"success": False, "error": "Resend API key missing"}
+            
+            import resend
+            resend.api_key = RESEND_API_KEY
+            
+            response = resend.Emails.send({
+                "from": SENDER_EMAIL,
+                "to": to_email,
+                "subject": subject,
+                "html": html_content
+            })
+            
+            logger.info(f"Email sent successfully to {to_email} via Resend")
             return {
-                "success": False,
-                "error": "Email service not configured",
-                "message": "Email credentials missing in .env file"
+                "success": True,
+                "message": f"Email sent to {to_email} via Resend",
+                "recipient": to_email
             }
-        
-        if not to_email:
-            logger.error("ERROR: No recipient email provided")
+            
+        else:
+            # Fallback to SMTP
+            if not SMTP_USERNAME or not SMTP_PASSWORD:
+                logger.warning("WARNING: Email credentials not configured. Email not sent.")
+                return {
+                    "success": False,
+                    "error": "Email service not configured",
+                    "message": "Email credentials missing in .env file"
+                }
+                
+            message = MIMEMultipart("alternative")
+            message["Subject"] = subject
+            message["From"] = SENDER_EMAIL
+            message["To"] = to_email
+            
+            html_part = MIMEText(html_content, "html")
+            message.attach(html_part)
+            
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+                server.starttls()
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(message)
+            
+            logger.info(f"Email sent successfully to {to_email} via SMTP")
             return {
-                "success": False,
-                "error": "No recipient email",
-                "message": "Recipient email address is missing"
+                "success": True,
+                "message": f"Email sent to {to_email}",
+                "recipient": to_email
             }
-        
-        message = MIMEMultipart("alternative")
-        message["Subject"] = subject
-        message["From"] = SENDER_EMAIL
-        message["To"] = to_email
-        
-        html_part = MIMEText(html_content, "html")
-        message.attach(html_part)
-        
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(message)
-        
-        logger.info(f"Email sent successfully to {to_email}")
         return {
             "success": True,
             "message": f"Email sent to {to_email}",
@@ -198,6 +221,15 @@ def send_service_booking_confirmation_email(service_id: str, booking_details: di
                 <p><strong>Service Center:</strong> {booking_details.get('service_center', 'N/A')}</p>
                 <p><strong>Scheduled Date:</strong> {booking_details.get('scheduled_date', 'N/A')}</p>
                 <p><strong>Time Slot:</strong> {booking_details.get('time_slot', 'N/A')}</p>
+            </div>
+            
+            <h3 style="color: #195de6;">Assigned Technicians:</h3>
+            <div style="background-color: #e8f0fe; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <ul style="margin: 0; padding-left: 20px;">
+                    <li><strong>Rahul Sharma</strong> - (+91) 98765 43210</li>
+                    <li><strong>Amit Patel</strong> - (+91) 91234 56789</li>
+                </ul>
+                <p style="margin-top: 10px; font-size: 14px; color: #555;">The technicians will contact you 30 minutes before arrival.</p>
             </div>
             
             <h3 style="color: #195de6;">Important Information:</h3>

@@ -3,22 +3,54 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 
-# Frontend (optional, not used in Cloud Run deployment)
-streamlit>=1.28.0
-
 # HTTP client
 requests>=2.31.0
 
-# Google Cloud and AI
-google-genai>=0.3.0
-google-cloud-aiplatform>=1.38.0
-vertexai>=1.38.0
+# LLM providers
+groq>=0.4.0
+openai>=1.0.0
+
+# Embeddings (local, free — no paid API)
+sentence-transformers>=2.2.0
+torch>=2.0.0
+
+# Text chunking
+langchain-text-splitters>=0.0.1
+
+# File uploads for FastAPI
+python-multipart>=0.0.6
+
+# Vector database
+chromadb>=0.4.18
+
+# PDF processing (PyMuPDF — better reading order & heading preservation)
+PyMuPDF>=1.23.0
+
+# OCR for scanned PDFs (EasyOCR — pure Python, no external binary needed)
+Pillow>=10.0.0
+easyocr>=1.7.0
+
+# DOCX processing
+python-docx>=0.8.11
+
+# Hybrid search (BM25 keyword index)
+rank-bm25>=0.2.2
 
 # Environment and configuration
 python-dotenv>=1.0.0
 
-# Vector database and RAG
-chromadb>=0.4.18
+# Supabase (optional — falls back to local JSON)
+supabase>=2.0.0
 
-# PDF processing
-pypdf>=3.17.0
+# Email
+# (uses stdlib smtplib — no extra deps)
+resend>=0.7.0
+
+# JWT Authentication
+python-jose[cryptography]>=3.3.0
+
+# Data imports
+pandas>=2.0.0
+openpyxl>=3.1.0
+python-pptx>=0.6.21
+
