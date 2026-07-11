@@ -354,7 +354,7 @@ graph TD
         FE_Admin["Admin Dashboard ‒ /admin"]
     end
 
-    subgraph FlyIO ["Fly.io ‒ Backend Hosting"]
+    subgraph Render ["Render ‒ Backend Hosting"]
         LB["Edge Load Balancer"]
         subgraph App_Tier ["Application Container"]
             FastAPI_App["FastAPI Server uvicorn"]
@@ -591,7 +591,7 @@ Open `http://localhost:5174`.
 | **Styling** | Tailwind CSS v4 | Utility-first CSS framework |
 | **Email** | SMTP / Resend | Transactional notification delivery |
 | **Containerization** | Docker | Production deployment packaging |
-| **Hosting** | Fly.io + Vercel | Backend (Fly) + Frontend (Vercel) |
+| **Hosting** | Render + Vercel | Backend (Render) + Frontend (Vercel) |
 
 ---
 
