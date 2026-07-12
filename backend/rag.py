@@ -57,7 +57,7 @@ ENABLE_QUERY_EXPANSION = os.getenv("ENABLE_QUERY_EXPANSION", "true").lower() == 
 ENABLE_HYBRID_SEARCH = os.getenv("ENABLE_HYBRID_SEARCH", "true").lower() == "true"
 
 # ── Module-level singletons ──────────────────────────────────────────
-_embedding_fn: Optional[SentenceTransformerEmbeddingFunction] = None
+_embedding_fn = None  # HuggingFaceAPIEmbeddingFunction or SentenceTransformerEmbeddingFunction
 _chroma_client: Optional[chromadb.PersistentClient] = None
 _collection = None
 _reranker = None
