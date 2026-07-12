@@ -251,7 +251,8 @@ def initialize_rag_system() -> bool:
             return True
 
         try:
-            logger.info("Initializing RAG system (local embeddings)...")
+            mode = "HF Inference API" if HF_TOKEN else "local embeddings"
+            logger.info(f"Initializing RAG system ({mode})...")
 
             # 1. Load embedding model
             ef = _get_embedding_fn()

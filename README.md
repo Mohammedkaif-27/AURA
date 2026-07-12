@@ -78,8 +78,8 @@ graph TD
     subgraph External_APIs ["External Services"]
         LLM_Groq[Groq LPU ‒ Llama 3.3 70B]
         LLM_NVIDIA[NVIDIA NIM ‒ Fallback]
-        Embed_Local[Sentence Transformers ‒ Local]
-        Reranker[Cross-Encoder Reranker ‒ Local]
+        Embed_HF[HF Inference API ‒ Embeddings]
+        Reranker[Cross-Encoder Reranker ‒ RRF Fallback]
         Email_SMTP[SMTP / Resend Email]
     end
 
@@ -89,7 +89,7 @@ graph TD
     API_Gateway --> Orchestration
 
     Agent_Retrieval --> DB_Chroma
-    Agent_Retrieval --> Embed_Local
+    Agent_Retrieval --> Embed_HF
     Agent_Retrieval --> Reranker
     Agent_Responder --> LLM_Groq
     Agent_Responder -.-> LLM_NVIDIA
@@ -98,7 +98,7 @@ graph TD
 
     API_Upload --> Storage_Docs
     API_Upload --> DB_Chroma
-    API_Upload --> Embed_Local
+    API_Upload --> Embed_HF
 
     API_Admin --> DB_Supabase
     API_Sessions --> DB_Supabase
@@ -474,7 +474,7 @@ The system employs a pipeline of specialized agents, but is architected to use o
 Rather than relying solely on vector similarity, AURA implements a sophisticated 5-stage retrieval pipeline:
 1. **LLM-based Query Expansion** — Rewrites the user query with alternative terminology
 2. **BM25 Keyword Search** — Captures exact term matches that embeddings might miss
-3. **Vector Similarity Search** — ChromaDB cosine similarity over BGE embeddings
+3. **Vector Similarity Search** — ChromaDB cosine similarity over BGE embeddings (via HF Inference API)
 4. **Reciprocal Rank Fusion (RRF)** — Merges BM25 and vector results into a unified ranking
 5. **Cross-Encoder Reranking** — A dedicated reranker model (`ms-marco-MiniLM-L-6-v2`) rescores the fused candidates
 
@@ -513,7 +513,7 @@ Unlike stateless Q&A bots, AURA maintains a rich session state that persists acr
 
 The knowledge base accepts PDF, DOCX, and PPTX uploads with:
 - **PyMuPDF** for superior PDF text extraction with reading-order preservation
-- **EasyOCR** fallback for scanned/image-based PDF pages
+- **Tesseract OCR** fallback for scanned/image-based PDF pages
 - **Token-based chunking** with configurable size and overlap
 - **Page-level metadata** — Every chunk carries its source filename and page number for precise citations
 - **Background processing** — Ingestion runs in a ThreadPoolExecutor (3 workers) with progress tracking via job IDs
@@ -581,8 +581,8 @@ Open `http://localhost:5174`.
 |-------|-----------|---------|
 | **LLM Inference** | Groq (Llama 3.3 70B) | Ultra-fast response generation via LPU |
 | **LLM Fallback** | NVIDIA NIM | Secondary provider for resilience |
-| **Embeddings** | Sentence Transformers (BGE) | Local, free semantic embeddings |
-| **Reranker** | Cross-Encoder (ms-marco) | Precision reranking of search results |
+| **Embeddings** | HF Inference API (BGE) | Remote, free semantic embeddings via Hugging Face |
+| **Reranker** | Reciprocal Rank Fusion | BM25 + Vector hybrid ranking (zero local RAM) |
 | **Vector Store** | ChromaDB | Persistent vector database |
 | **Keyword Search** | BM25 (rank-bm25) | Complementary lexical retrieval |
 | **Database** | Supabase PostgreSQL | Relational data + Auth + Blob Storage |
@@ -605,7 +605,8 @@ Open `http://localhost:5174`.
 | `SUPABASE_ANON_KEY` | Yes | Supabase anon/public key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key |
 | `EMBEDDING_MODEL` | No | Default: `BAAI/bge-base-en-v1.5` |
-| `RERANKER_MODEL` | No | Default: `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| `HF_TOKEN` | Yes (cloud) | Hugging Face API token for remote embeddings |
+| `RERANKER_MODEL` | No | Default: `cross-encoder/ms-marco-MiniLM-L-6-v2` (skipped in API mode) |
 | `SMTP_HOST` | No | Email server host (default: `smtp.gmail.com`) |
 | `SMTP_USERNAME` | No | Email account username |
 | `SMTP_PASSWORD` | No | Email account app password |
