@@ -10,9 +10,14 @@ requests>=2.31.0
 groq>=0.4.0
 openai>=1.0.0
 
-# Embeddings (local, free — no paid API)
-sentence-transformers>=2.2.0
-torch>=2.0.0
+# Embeddings — when HF_TOKEN is set, embeddings are handled via the
+# Hugging Face Inference API (zero local RAM, no torch needed).
+# Uncomment the next two lines ONLY if you need local embedding mode:
+# sentence-transformers>=2.2.0
+# torch>=2.0.0
+
+# Numpy (lightweight, used for mean-pooling API embeddings)
+numpy>=1.24.0
 
 # Text chunking
 langchain-text-splitters>=0.0.1
@@ -26,9 +31,10 @@ chromadb>=0.4.18
 # PDF processing (PyMuPDF — better reading order & heading preservation)
 PyMuPDF>=1.23.0
 
-# OCR for scanned PDFs (EasyOCR — pure Python, no external binary needed)
+# OCR for scanned PDFs (pytesseract — used in rag.py)
 Pillow>=10.0.0
-easyocr>=1.7.0
+# pytesseract is optional; install if needed for OCR support
+# pytesseract>=0.3.10
 
 # DOCX processing
 python-docx>=0.8.11
@@ -53,4 +59,3 @@ python-jose[cryptography]>=3.3.0
 pandas>=2.0.0
 openpyxl>=3.1.0
 python-pptx>=0.6.21
-

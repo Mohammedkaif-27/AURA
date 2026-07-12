@@ -15,9 +15,12 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download embedding models at build time (avoids first-request latency)
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5')"
-RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+# NOTE: In HF API mode (HF_TOKEN set), models are NOT loaded locally.
+# The heavy sentence-transformers + torch are only needed for local mode.
+# To keep the Docker image small for Render/cloud, we skip model pre-download.
+# If you need local mode, uncomment the lines below:
+# RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5')"
+# RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
 # Copy the entire project
 COPY . .

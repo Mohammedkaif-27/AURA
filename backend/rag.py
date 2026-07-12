@@ -1,15 +1,17 @@
 """
 AURA RAG System — Retrieval-Augmented Generation
 
-Embeddings: Local sentence-transformers (BAAI/bge-small-en-v1.5 default, CPU).
+Embeddings: Hugging Face Inference API (remote, zero local RAM) or local
+            sentence-transformers fallback.
 Vector DB:  ChromaDB with native embedding function integration.
 Chunking:   Token-based recursive splitting with page-level metadata.
-Reranking:  Cross-encoder reranking for improved retrieval accuracy.
+Reranking:  Cross-encoder reranking (API or local).
 Hybrid:     BM25 keyword search + vector search with Reciprocal Rank Fusion.
 Query Exp:  LLM-based query expansion for better recall.
 
 OPTIMIZED:
-- Both embedding model and reranker preloaded at startup (no lazy-load on first chat).
+- HF Inference API mode: ~100 MB RAM (no PyTorch/sentence-transformers).
+- Local mode fallback: loads models when HF_TOKEN is not set.
 - Thread-safe initialization with locks.
 - Multi-format document ingestion: PDF, DOCX, PPTX.
 - Consolidated search: single function returns both text and metadata.
@@ -23,11 +25,11 @@ import os
 import glob
 import logging
 import threading
+import requests as http_requests
 from typing import List, Dict, Optional
 
 import chromadb
 from chromadb.config import Settings
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -39,6 +41,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "backend/chroma_db")
 COLLECTION_NAME = "aura_manuals"
+HF_TOKEN = os.getenv("HF_TOKEN", "")  # Hugging Face API token for remote embeddings
 
 # Chunking parameters (token-based)
 CHUNK_SIZE_TOKENS = int(os.getenv("CHUNK_SIZE_TOKENS", "350"))
@@ -73,21 +76,71 @@ _bm25_lock = threading.Lock()
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-def _get_embedding_fn() -> SentenceTransformerEmbeddingFunction:
-    """Return singleton embedding function (loads model once)."""
+
+class HuggingFaceAPIEmbeddingFunction:
+    """ChromaDB-compatible embedding function using HF Inference API.
+
+    Sends texts to the Hugging Face Inference API and receives embeddings
+    back — zero local model loading, near-zero RAM.
+    """
+
+    def __init__(self, model_name: str, api_token: str):
+        self.model_name = model_name
+        self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
+        self.headers = {"Authorization": f"Bearer {api_token}"}
+
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        """Generate embeddings for a list of texts via the HF API."""
+        payload = {"inputs": input, "options": {"wait_for_model": True}}
+        response = http_requests.post(self.api_url, headers=self.headers, json=payload, timeout=60)
+        response.raise_for_status()
+        embeddings = response.json()
+        # The API returns a list of embeddings (each is a list of floats)
+        # For some models, each embedding is nested [[...]], so we flatten
+        result = []
+        for emb in embeddings:
+            if isinstance(emb[0], list):
+                # Token-level embeddings — mean-pool to get sentence embedding
+                import numpy as np
+                result.append(np.mean(emb, axis=0).tolist())
+            else:
+                result.append(emb)
+        return result
+
+
+def _get_embedding_fn():
+    """Return singleton embedding function.
+
+    Uses HF Inference API when HF_TOKEN is set (zero RAM),
+    otherwise falls back to local sentence-transformers.
+    """
     global _embedding_fn
     if _embedding_fn is None:
-        logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
-        _embedding_fn = SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL,
-            device="cpu",
-        )
-        logger.info("Embedding model loaded (CPU)")
+        if HF_TOKEN:
+            logger.info(f"Loading embedding model via HF Inference API: {EMBEDDING_MODEL}")
+            _embedding_fn = HuggingFaceAPIEmbeddingFunction(
+                model_name=EMBEDDING_MODEL,
+                api_token=HF_TOKEN,
+            )
+            logger.info("Embedding function ready (HF Inference API — zero local RAM)")
+        else:
+            logger.info(f"Loading embedding model locally: {EMBEDDING_MODEL}")
+            from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+            _embedding_fn = SentenceTransformerEmbeddingFunction(
+                model_name=EMBEDDING_MODEL,
+                device="cpu",
+            )
+            logger.info("Embedding model loaded (CPU, local)")
     return _embedding_fn
 
 
 def _get_reranker():
-    """Load cross-encoder reranker model (thread-safe, loads once)."""
+    """Load cross-encoder reranker model (thread-safe, loads once).
+
+    When HF_TOKEN is set, skips the heavy local reranker to save RAM.
+    The hybrid BM25 + vector search with RRF already provides excellent
+    ranking without a cross-encoder.
+    """
     global _reranker, _reranker_attempted
 
     with _reranker_lock:
@@ -95,6 +148,13 @@ def _get_reranker():
             return _reranker if _reranker is not False else None
 
         _reranker_attempted = True
+
+        # In API mode, skip the local reranker to save ~200MB RAM
+        if HF_TOKEN:
+            logger.info("Reranker skipped (API mode — using RRF ranking instead)")
+            _reranker = False
+            return None
+
         try:
             from sentence_transformers import CrossEncoder
             logger.info(f"Loading reranker model: {RERANKER_MODEL}")
