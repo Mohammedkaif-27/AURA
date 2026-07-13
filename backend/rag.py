@@ -77,7 +77,9 @@ _bm25_lock = threading.Lock()
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-class HuggingFaceAPIEmbeddingFunction:
+from chromadb.api.types import EmbeddingFunction
+
+class HuggingFaceAPIEmbeddingFunction(EmbeddingFunction):
     """ChromaDB-compatible embedding function using HF Inference API.
 
     Sends texts to the Hugging Face Inference API and receives embeddings
