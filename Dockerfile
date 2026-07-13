@@ -25,8 +25,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the entire project
 COPY . .
 
-# Create data directories
-RUN mkdir -p backend/data backend/chroma_db
+# Create data directories (must exist before startup auto-ingestion)
+RUN mkdir -p backend/data/manuals backend/data/policies backend/chroma_db
 
 EXPOSE 8080
 

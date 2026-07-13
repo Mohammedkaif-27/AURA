@@ -84,12 +84,36 @@ class HuggingFaceAPIEmbeddingFunction(EmbeddingFunction):
 
     Sends texts to the Hugging Face Inference API and receives embeddings
     back — zero local model loading, near-zero RAM.
+
+    Uses requests.Session with urllib3 Retry adapter for automatic retry
+    on DNS resolution failures, connection drops, and transient 5xx errors
+    (common on Render and similar cloud platforms).
     """
 
     def __init__(self, model_name: str, api_token: str):
         self.model_name = model_name
         self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
         self.headers = {"Authorization": f"Bearer {api_token}"}
+
+        # Build a resilient HTTP session with connection pooling and retry
+        from urllib3.util.retry import Retry
+        from requests.adapters import HTTPAdapter
+
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,            # 1s, 2s, 4s
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=2,
+            pool_maxsize=5,
+        )
+        self._session = http_requests.Session()
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
 
     def name(self) -> str:
         """Return 'sentence_transformer' to match the local model's persisted name in ChromaDB.
@@ -100,7 +124,9 @@ class HuggingFaceAPIEmbeddingFunction(EmbeddingFunction):
     def __call__(self, input: List[str]) -> List[List[float]]:
         """Generate embeddings for a list of texts via the HF API."""
         payload = {"inputs": input, "options": {"wait_for_model": True}}
-        response = http_requests.post(self.api_url, headers=self.headers, json=payload, timeout=60)
+        response = self._session.post(
+            self.api_url, headers=self.headers, json=payload, timeout=60
+        )
         response.raise_for_status()
         embeddings = response.json()
         # The API returns a list of embeddings (each is a list of floats)
@@ -970,13 +996,20 @@ def search_knowledge(query: str, k: int = 5) -> List[str]:
     """
     try:
         if not _initialized:
-            logger.warning("RAG system not initialized, cannot search")
+            logger.warning("RAG search skipped — system not initialized")
+            return []
+
+        doc_count = _collection.count() if _collection else 0
+        if doc_count == 0:
+            logger.warning("RAG search: collection is empty (0 documents indexed). "
+                           "Upload documents via /admin/upload or place files in backend/data/manuals/")
             return []
 
         # Phase 3: Widen retrieval to RETRIEVAL_CANDIDATES (default 20)
         results = _collection.query(query_texts=[query], n_results=RETRIEVAL_CANDIDATES)
 
         if not results or not results["documents"] or not results["documents"][0]:
+            logger.info(f"RAG search: no matches for query (collection has {doc_count} docs)")
             return []
 
         candidates = results["documents"][0]
@@ -1011,7 +1044,13 @@ def search_knowledge_with_metadata(query: str, k: int = 5, skip_expansion: bool 
     """
     try:
         if not _initialized:
-            logger.warning("RAG system not initialized, cannot search")
+            logger.warning("RAG hybrid search skipped — system not initialized")
+            return []
+
+        doc_count = _collection.count() if _collection else 0
+        if doc_count == 0:
+            logger.warning("RAG hybrid search: collection is empty (0 documents indexed). "
+                           "Upload documents via /admin/upload or place files in backend/data/manuals/")
             return []
 
         # Phase 4: Expand query into variants

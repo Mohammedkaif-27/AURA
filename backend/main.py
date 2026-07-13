@@ -27,7 +27,7 @@ import pandas as pd
 import io
 
 from backend.orchestrator import process_message
-from backend.rag import initialize_rag_system, ingest_single_document
+from backend.rag import initialize_rag_system, ingest_single_document, load_manuals_into_rag
 from backend.llm_client import initialize_llm_client
 from backend import supabase_client
 
@@ -194,6 +194,10 @@ async def startup_event():
     start_time = time.time()
     logger.info("Starting AURA Backend v2.0...")
 
+    # Ensure data directories exist (critical for Docker and fresh clones)
+    for d in ["backend/data/manuals", "backend/data/policies"]:
+        os.makedirs(d, exist_ok=True)
+
     # Initialize LLM Client (Singleton)
     if initialize_llm_client():
         logger.info("LLM client initialized")
@@ -203,6 +207,15 @@ async def startup_event():
     # Initialize RAG system (Loads Embedding Model + Reranker + ChromaDB)
     if initialize_rag_system():
         logger.info("RAG system initialized successfully.")
+
+        # Auto-ingest local manuals if the collection is empty (fresh deployment)
+        from backend.rag import _collection
+        if _collection and _collection.count() == 0:
+            logger.info("Collection is empty — attempting auto-ingestion of local manuals...")
+            try:
+                load_manuals_into_rag()
+            except Exception as e:
+                logger.warning(f"Auto-ingestion skipped or failed: {e}")
     else:
         logger.error("Failed to initialize RAG system")
 
