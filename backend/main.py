@@ -27,7 +27,7 @@ import pandas as pd
 import io
 
 from backend.orchestrator import process_message
-from backend.rag import initialize_rag_system, load_manuals_into_rag, ingest_single_document
+from backend.rag import initialize_rag_system, ingest_single_document
 from backend.llm_client import initialize_llm_client
 from backend import supabase_client
 
@@ -202,12 +202,7 @@ async def startup_event():
 
     # Initialize RAG system (Loads Embedding Model + Reranker + ChromaDB)
     if initialize_rag_system():
-        logger.info("RAG system fully initialized")
-
-        if load_manuals_into_rag():
-            logger.info("Documents loaded successfully")
-        else:
-            logger.warning("No documents loaded — agent will work with limited context")
+        logger.info("RAG system initialized successfully.")
     else:
         logger.error("Failed to initialize RAG system")
 
