@@ -86,9 +86,14 @@ class HuggingFaceAPIEmbeddingFunction:
 
     def __init__(self, model_name: str, api_token: str):
         self.model_name = model_name
-        self.name = model_name  # ChromaDB requires this attribute
         self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
         self.headers = {"Authorization": f"Bearer {api_token}"}
+
+    def name(self) -> str:
+        """Return 'sentence_transformer' to match the local model's persisted name in ChromaDB.
+        This prevents an embedding function conflict error when switching between local and API mode,
+        as both use the exact same underlying BGE model."""
+        return "sentence_transformer"
 
     def __call__(self, input: List[str]) -> List[List[float]]:
         """Generate embeddings for a list of texts via the HF API."""
@@ -283,7 +288,7 @@ def initialize_rag_system() -> bool:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to initialize RAG system: {e}")
+            logger.error(f"Failed to initialize RAG system: {e}", exc_info=True)
             return False
 
 
