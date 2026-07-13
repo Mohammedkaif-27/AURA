@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/badge/Supabase-PostgreSQL-3FCF8E?style=for-the-badge&logo=supabase&logoColor=white" />
   <img src="https://img.shields.io/badge/ChromaDB-Vector_Store-FF6F61?style=for-the-badge" />
   <img src="https://img.shields.io/badge/Groq-LPU_Inference-F55036?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/HuggingFace-Inference_API-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" />
 </p>
 
 ---
@@ -17,7 +18,7 @@ AURA is a production-grade, AI-powered customer support platform that goes far b
 ### ✨ Key Highlights
 
 - 🤖 **Multi-Agent Pipeline** — Intent → RAG → Responder → Action → Execution (only 1 LLM call per request)
-- 📄 **Knowledge-Grounded Answers** — Hybrid BM25 + Vector search with Cross-Encoder reranking eliminates hallucination
+- 📄 **Knowledge-Grounded Answers** — Hybrid BM25 + Vector search with Reciprocal Rank Fusion eliminates hallucination
 - ⚡ **Sub-2s Response Times** — Groq LPU inference + deterministic intent classification + LLM response caching
 - 🔒 **Deterministic Policy Enforcement** — Refund/replacement windows enforced programmatically, not by the LLM
 - 📧 **Automated Email Notifications** — Transactional emails via SMTP or Resend API on every action
@@ -78,8 +79,7 @@ graph TD
     subgraph External_APIs ["External Services"]
         LLM_Groq[Groq LPU ‒ Llama 3.3 70B]
         LLM_NVIDIA[NVIDIA NIM ‒ Fallback]
-        Embed_HF[HF Inference API ‒ Embeddings]
-        Reranker[Cross-Encoder Reranker ‒ RRF Fallback]
+        Embed_HF[HF Inference API ‒ BGE Embeddings]
         Email_SMTP[SMTP / Resend Email]
     end
 
@@ -90,7 +90,6 @@ graph TD
 
     Agent_Retrieval --> DB_Chroma
     Agent_Retrieval --> Embed_HF
-    Agent_Retrieval --> Reranker
     Agent_Responder --> LLM_Groq
     Agent_Responder -.-> LLM_NVIDIA
     Agent_Execution --> DB_Supabase
@@ -122,10 +121,10 @@ graph LR
 
     RAGDecision -->|Yes| QueryExp["Query Expansion LLM-assisted"]
     QueryExp -->|7. Hybrid Search| BM25["BM25 Keyword Index"]
-    QueryExp -->|7. Hybrid Search| VectorDB["ChromaDB Vectors"]
+    QueryExp -->|7. Hybrid Search| VectorDB["ChromaDB via HF API"]
     BM25 -->|8. Reciprocal Rank Fusion| Fusion[RRF Merger]
     VectorDB -->|8. Reciprocal Rank Fusion| Fusion
-    Fusion -->|9. Rerank Top-K| RerankerNode["Cross-Encoder Reranker"]
+    Fusion -->|9. Rank Top-K| RerankerNode["RRF Weighted Ranking"]
 
     RAGDecision -->|No ‒ Greeting/Short| DirectResp[Skip to Responder]
 
@@ -374,6 +373,7 @@ graph TD
 
     subgraph External ["External APIs"]
         Groq["Groq LPU Llama 3.3 70B"]
+        HF_API["HF Inference API BGE Embeddings"]
         EmailProvider["SMTP / Resend"]
     end
 
@@ -385,6 +385,7 @@ graph TD
     FastAPI_App --> OrchestratorNode
     OrchestratorNode --> RAG_Engine
     RAG_Engine --> ChromaDB_Vol
+    RAG_Engine --> HF_API
     FastAPI_App --> PostgreSQL
     FastAPI_App --> Auth
     FastAPI_App --> BlobStorage
@@ -403,7 +404,7 @@ AURA/
 │   ├── main.py                       # FastAPI app entry point, all routes
 │   ├── orchestrator.py               # Multi-agent pipeline coordinator
 │   ├── agents.py                     # Intent, Retrieval, Responder, Verifier, Action agents
-│   ├── rag.py                        # RAG engine (embeddings, ChromaDB, BM25, reranker)
+│   ├── rag.py                        # RAG engine (HF API embeddings, ChromaDB, BM25, RRF)
 │   ├── llm_client.py                 # Unified LLM interface (Groq/NVIDIA) with caching
 │   ├── session_manager.py            # Chat session state and Supabase persistence
 │   ├── order_lookup.py               # Order ID extraction and DB lookup
@@ -417,17 +418,18 @@ AURA/
 │   │   ├── App.jsx                   # Root component with auth routing
 │   │   ├── api.js                    # Backend API client functions
 │   │   ├── main.jsx                  # React entry point
-│   │   ├── index.css                 # Global styles (CSS variables, dark theme)
+│   │   ├── index.css                 # Global styles (design system, responsive, animations)
 │   │   ├── components/
 │   │   │   ├── Auth.jsx              # Login / signup form
 │   │   │   ├── ChatWindow.jsx        # Main chat UI with session sidebar
 │   │   │   ├── MessageBubble.jsx     # Individual message renderer
 │   │   │   ├── ActionCard.jsx        # Action result display cards
-│   │   │   ├── ConfirmModal.jsx      # Glassmorphic confirmation modal
+│   │   │   ├── ConfirmModal.jsx      # Bottom-sheet modal (mobile) / centered (desktop)
 │   │   │   ├── SourceChip.jsx        # Source citation chips
 │   │   │   └── TypingIndicator.jsx   # Bot typing animation
 │   │   └── lib/
 │   │       └── supabase.js           # Supabase client initialization
+│   ├── vercel.json                   # SPA routing rewrites for Vercel
 │   └── index.html
 │
 ├── admin/                            # Admin Dashboard (React 19 + Vite)
@@ -451,6 +453,7 @@ AURA/
 │   │   │   └── LiveCenter.jsx        # Real-time chat monitoring
 │   │   └── lib/
 │   │       └── supabase.js           # Supabase client initialization
+│   ├── vercel.json                   # SPA routing rewrites for Vercel
 │   └── index.html
 │
 ├── .env.example                      # Environment variable template
@@ -469,16 +472,15 @@ AURA/
 
 The system employs a pipeline of specialized agents, but is architected to use only **1 LLM call per user message** (the Responder). Intent classification is fully deterministic (regex/keyword), action mapping is a static dictionary lookup, and confirmation messages use predefined templates. This reduces latency by ~70% and cost by ~75% compared to naive multi-LLM-call architectures.
 
-**2. Hybrid RAG with 5-Stage Retrieval**
+**2. Hybrid RAG with 4-Stage Retrieval**
 
-Rather than relying solely on vector similarity, AURA implements a sophisticated 5-stage retrieval pipeline:
+Rather than relying solely on vector similarity, AURA implements a sophisticated 4-stage retrieval pipeline:
 1. **LLM-based Query Expansion** — Rewrites the user query with alternative terminology
 2. **BM25 Keyword Search** — Captures exact term matches that embeddings might miss
-3. **Vector Similarity Search** — ChromaDB cosine similarity over BGE embeddings (via HF Inference API)
-4. **Reciprocal Rank Fusion (RRF)** — Merges BM25 and vector results into a unified ranking
-5. **Cross-Encoder Reranking** — A dedicated reranker model (`ms-marco-MiniLM-L-6-v2`) rescores the fused candidates
+3. **Vector Similarity Search** — ChromaDB cosine similarity over BGE embeddings (via HF Inference API — zero local RAM)
+4. **Reciprocal Rank Fusion (RRF)** — Merges BM25 and vector results into a weighted unified ranking
 
-This hybrid approach consistently outperforms pure vector search, especially for product-specific technical queries containing model numbers and error codes.
+The HF Inference API approach eliminates the need for local PyTorch/sentence-transformers, reducing server RAM from ~600MB to ~100MB while maintaining full embedding quality. This hybrid approach consistently outperforms pure vector search, especially for product-specific technical queries containing model numbers and error codes.
 
 **3. Deterministic Policy Enforcement**
 
@@ -528,6 +530,7 @@ The knowledge base accepts PDF, DOCX, and PPTX uploads with:
 - **Node.js 18+**
 - A free [Supabase](https://supabase.com) project
 - A free [Groq](https://console.groq.com) API key
+- A free [Hugging Face](https://huggingface.co/settings/tokens) access token (for remote embeddings)
 
 ### 1. Clone and Configure
 
@@ -537,7 +540,7 @@ cd AURA
 
 # Create .env from template
 cp .env.example .env
-# Fill in your GROQ_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
+# Fill in your GROQ_API_KEY, HF_TOKEN, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 ```
 
 ### 2. Set Up the Database
