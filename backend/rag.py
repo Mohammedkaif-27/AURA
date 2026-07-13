@@ -115,6 +115,14 @@ class HuggingFaceAPIEmbeddingFunction(EmbeddingFunction):
                 result.append(emb)
         return result
 
+    def embed_query(self, input: List[str]) -> List[List[float]]:
+        """Embed query text using the same implementation as document embeddings."""
+        return self.__call__(input)
+
+    def embed_documents(self, input: List[str]) -> List[List[float]]:
+        """Embed documents using the same implementation."""
+        return self.__call__(input)
+
 
 def _get_embedding_fn():
     """Return singleton embedding function.
