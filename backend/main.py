@@ -27,7 +27,7 @@ import pandas as pd
 import io
 
 from backend.orchestrator import process_message
-from backend.rag import initialize_rag_system, ingest_single_document, load_manuals_into_rag
+from backend.rag import initialize_rag_system, ingest_single_document
 from backend.llm_client import initialize_llm_client
 from backend import supabase_client
 
@@ -194,9 +194,8 @@ async def startup_event():
     start_time = time.time()
     logger.info("Starting AURA Backend v2.0...")
 
-    # Ensure data directories exist (critical for Docker and fresh clones)
-    for d in ["backend/data/manuals", "backend/data/policies"]:
-        os.makedirs(d, exist_ok=True)
+    # Ensure data directories exist (for temp file processing)
+    os.makedirs("backend/data/manuals", exist_ok=True)
 
     # Initialize LLM Client (Singleton)
     if initialize_llm_client():
@@ -208,19 +207,73 @@ async def startup_event():
     if initialize_rag_system():
         logger.info("RAG system initialized successfully.")
 
-        # Auto-ingest local manuals if the collection is empty (fresh deployment)
+        # Re-ingest from Supabase Storage if ChromaDB is empty (ephemeral filesystem)
         from backend.rag import _collection
         if _collection and _collection.count() == 0:
-            logger.info("Collection is empty — attempting auto-ingestion of local manuals...")
-            try:
-                load_manuals_into_rag()
-            except Exception as e:
-                logger.warning(f"Auto-ingestion skipped or failed: {e}")
+            logger.info("ChromaDB is empty — re-ingesting documents from Supabase Storage...")
+            _reindex_from_supabase()
     else:
         logger.error("Failed to initialize RAG system")
 
     elapsed = time.time() - start_time
     logger.info(f"AURA Backend is ready! (Startup took {elapsed:.2f}s)")
+
+
+def _reindex_from_supabase():
+    """Download all documents from Supabase Storage and re-ingest into ChromaDB.
+
+    Called on startup when ChromaDB is empty (Render's ephemeral filesystem
+    wipes chroma_db/ on every deploy, but documents persist in Supabase Storage).
+    """
+    try:
+        # Get list of previously uploaded documents from knowledge_base table
+        entries = supabase_client.get_knowledge_entries()
+        if not entries:
+            logger.info("No documents found in Supabase knowledge_base — nothing to re-index")
+            return
+
+        reindexed = 0
+        for entry in entries:
+            filename = entry.get("file_name", "")
+            bucket_path = entry.get("bucket_path", "")
+            if not filename or not bucket_path:
+                continue
+
+            try:
+                # Download file bytes from Supabase Storage
+                file_bytes = supabase_client.download_file_from_storage("manuals", bucket_path)
+                if not file_bytes:
+                    logger.warning(f"Re-index: could not download {filename} from storage")
+                    continue
+
+                # Write to temp file for ingestion
+                ext = os.path.splitext(filename)[1].lower()
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                    tmp.write(file_bytes)
+                    tmp_path = tmp.name
+
+                # Ingest into ChromaDB
+                doc_type = entry.get("document_type", "manual")
+                result = ingest_single_document(tmp_path, filename, doc_type=doc_type)
+                os.unlink(tmp_path)
+
+                chunks = result.get("chunks_count", 0) if isinstance(result, dict) else result
+                if chunks > 0:
+                    reindexed += 1
+                    logger.info(f"Re-indexed {filename}: {chunks} chunks")
+
+                # Update knowledge_base status
+                supabase_client.update_knowledge_status(entry.get("id"), "ready", chunks)
+
+            except Exception as e:
+                logger.error(f"Re-index failed for {filename}: {e}")
+                continue
+
+        logger.info(f"Re-indexing complete: {reindexed}/{len(entries)} documents restored")
+
+    except Exception as e:
+        logger.error(f"Re-indexing from Supabase failed: {e}")
 
 
 # ── Health & root ────────────────────────────────────────────────────

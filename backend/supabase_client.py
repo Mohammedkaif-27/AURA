@@ -431,3 +431,29 @@ def upload_file_to_storage(bucket: str, path: str, file_bytes: bytes, content_ty
     except Exception as e:
         logger.error(f"Error uploading to storage: {e}")
         return None
+
+
+def get_storage_file_list(bucket: str, folder: str = "") -> list:
+    """List all files in a Supabase Storage bucket/folder."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        result = client.storage.from_(bucket).list(folder)
+        return result or []
+    except Exception as e:
+        logger.error(f"Error listing storage files: {e}")
+        return []
+
+
+def download_file_from_storage(bucket: str, path: str) -> bytes:
+    """Download a file from Supabase Storage. Returns raw bytes or None."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        data = client.storage.from_(bucket).download(path)
+        return data
+    except Exception as e:
+        logger.error(f"Error downloading from storage ({path}): {e}")
+        return None
