@@ -554,28 +554,39 @@ def _ocr_page_tesseract(file_path: str, page_index: int) -> str:
 
 # ── Document extraction (multi-format) ───────────────────────────────
 
-def _extract_pages_pdf(file_path: str, skip_ocr: bool = False) -> Dict:
-    """Extract text and tables from a PDF using pdfplumber.
+def _extract_pages_pdf(file_path: str, skip_ocr: bool = False, lightweight: bool = False) -> Dict:
+    """Extract text and tables from a PDF.
 
-    Table-aware extraction: pdfplumber retains spatial layout and converts
-    tables into structured markdown-like formats automatically.
-    For pages with minimal native text, falls back to Tesseract OCR
-    (fast CPU-based OCR via PyMuPDF rendering + pytesseract).
+    When lightweight=False (default): uses pdfplumber for high-quality table-aware
+    extraction with optional OCR fallback.  ~300 MB RAM for large PDFs.
+
+    When lightweight=True: uses pypdf for basic text extraction.  ~30 MB RAM.
+    Used during startup re-indexing on memory-constrained hosts (Render 512 MB).
 
     Args:
         skip_ocr: If True, skip Tesseract OCR for pages without native text.
-                  Used during startup re-indexing to avoid slow processing.
+        lightweight: If True, use pypdf (low RAM) instead of pdfplumber.
 
     Returns a dict:
         {
             "pages": [{"page": int, "text": str}, ...],
             "total_pages": int,
             "ocr_pages": int,
-            "ocr_required": bool,  # True if ALL pages needed OCR (no native text layer)
+            "ocr_required": bool,
         }
     """
     result = {"pages": [], "total_pages": 0, "ocr_pages": 0, "ocr_required": False}
 
+    # ── Lightweight mode: pypdf (low memory) ─────────────────────────
+    if lightweight:
+        fallback_pages = _extract_pages_pdf_fallback(file_path)
+        result["pages"] = fallback_pages
+        result["total_pages"] = len(fallback_pages)
+        logger.info(f"PDF extraction complete (lightweight/pypdf): "
+                    f"{len(fallback_pages)} pages with text")
+        return result
+
+    # ── Full mode: pdfplumber (high quality, higher RAM) ─────────────
     try:
         import pdfplumber
 
@@ -623,7 +634,6 @@ def _extract_pages_pdf(file_path: str, skip_ocr: bool = False) -> Dict:
 
     except ImportError:
         logger.error("pdfplumber not installed — pip install pdfplumber")
-        # Fallback to basic extraction
         fallback_pages = _extract_pages_pdf_fallback(file_path)
         result["pages"] = fallback_pages
         return result
@@ -738,7 +748,7 @@ def _extract_pages_txt(file_path: str) -> List[Dict]:
         return []
 
 
-def _extract_pages(file_path: str, skip_ocr: bool = False) -> Dict:
+def _extract_pages(file_path: str, skip_ocr: bool = False, lightweight: bool = False) -> Dict:
     """Route to the correct extractor based on file extension.
 
     Returns a dict with keys:
@@ -760,7 +770,7 @@ def _extract_pages(file_path: str, skip_ocr: bool = False) -> Dict:
         }
 
     if ext == ".pdf":
-        return _extract_pages_pdf(file_path, skip_ocr=skip_ocr)
+        return _extract_pages_pdf(file_path, skip_ocr=skip_ocr, lightweight=lightweight)
     elif ext == ".docx":
         return _wrap(_extract_pages_docx(file_path))
     elif ext == ".pptx":
@@ -809,7 +819,7 @@ def load_manuals_into_rag() -> bool:
         return False
 
 
-def ingest_single_document(file_path: str, source_name: str = "", doc_type: str = "manual", skip_ocr: bool = False) -> Dict:
+def ingest_single_document(file_path: str, source_name: str = "", doc_type: str = "manual", skip_ocr: bool = False, lightweight: bool = False) -> Dict:
     """
     Ingest a single document (PDF/DOCX/PPTX/TXT): extract → chunk → upsert into ChromaDB.
 
@@ -826,13 +836,14 @@ def ingest_single_document(file_path: str, source_name: str = "", doc_type: str 
         source_name: Display name for citation metadata.
         doc_type: Document type tag — 'manual', 'policy', 'faq', or 'other'.
         skip_ocr: If True, skip Tesseract OCR (used during fast startup re-indexing).
+        lightweight: If True, use pypdf instead of pdfplumber (low RAM mode).
     """
     if not _initialized:
         if not initialize_rag_system():
             raise RuntimeError("Cannot initialize RAG system")
 
     source = source_name or os.path.basename(file_path)
-    extraction = _extract_pages(file_path, skip_ocr=skip_ocr)
+    extraction = _extract_pages(file_path, skip_ocr=skip_ocr, lightweight=lightweight)
     pages = extraction.get("pages", [])
     ocr_pages = extraction.get("ocr_pages", 0)
     total_pages = extraction.get("total_pages", 0)

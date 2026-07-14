@@ -241,7 +241,8 @@ def _reindex_from_supabase():
     """
     import gc
 
-    MAX_REINDEX_FILE_BYTES = int(os.getenv("MAX_REINDEX_FILE_MB", "15")) * 1024 * 1024
+    # Lowered to 5MB to strictly prevent OOM during pdfplumber/ChromaDB spikes
+    MAX_REINDEX_FILE_BYTES = int(os.getenv("MAX_REINDEX_FILE_MB", "5")) * 1024 * 1024
 
     try:
         # Get list of previously uploaded documents from knowledge_base table
@@ -289,9 +290,11 @@ def _reindex_from_supabase():
                 del file_bytes
                 gc.collect()
 
-                # Ingest into ChromaDB (skip OCR for fast startup — native text only)
+                # Ingest into ChromaDB (skip OCR and use lightweight pypdf for fast startup)
                 doc_type = entry.get("document_type", "manual")
-                result = ingest_single_document(tmp_path, filename, doc_type=doc_type, skip_ocr=True)
+                result = ingest_single_document(
+                    tmp_path, filename, doc_type=doc_type, skip_ocr=True, lightweight=True
+                )
                 os.unlink(tmp_path)
 
                 chunks = result.get("chunks_count", 0) if isinstance(result, dict) else result
