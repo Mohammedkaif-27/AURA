@@ -517,9 +517,10 @@ def _ocr_page_tesseract(file_path: str, page_index: int) -> str:
 
         doc = fitz.open(file_path)
         page = doc[page_index]
-        # 300 DPI gives good OCR quality without being excessively large
-        pix = page.get_pixmap(dpi=300)
+        # 150 DPI balances OCR quality vs. speed/memory on constrained hosts
+        pix = page.get_pixmap(dpi=150)
         img_bytes = pix.tobytes("png")
+        del pix  # Free pixmap memory immediately
         doc.close()
 
         # Configure Tesseract path on Windows if not on PATH
@@ -535,7 +536,9 @@ def _ocr_page_tesseract(file_path: str, page_index: int) -> str:
                 return ""
 
         pil_image = Image.open(_io.BytesIO(img_bytes))
+        del img_bytes  # Free raw PNG bytes
         text = pytesseract.image_to_string(pil_image)
+        del pil_image  # Free PIL image
         return text.strip()
 
     except ImportError as ie:
