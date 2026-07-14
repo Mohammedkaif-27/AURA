@@ -34,6 +34,7 @@ PyMuPDF>=1.23.0
 
 # PDF extraction fallback (pdfplumber — used in rag.py _extract_pages_pdf)
 pdfplumber>=0.10.0
+pypdf>=3.0.0
 
 # OCR for scanned PDFs (pytesseract — used in rag.py)
 Pillow>=10.0.0

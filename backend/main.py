@@ -242,7 +242,7 @@ def _reindex_from_supabase():
     import gc
 
     # Lowered to 5MB to strictly prevent OOM during pdfplumber/ChromaDB spikes
-    MAX_REINDEX_FILE_BYTES = int(os.getenv("MAX_REINDEX_FILE_MB", "5")) * 1024 * 1024
+    MAX_REINDEX_FILE_BYTES = int(os.getenv("MAX_REINDEX_FILE_MB", "15")) * 1024 * 1024
 
     try:
         # Get list of previously uploaded documents from knowledge_base table
