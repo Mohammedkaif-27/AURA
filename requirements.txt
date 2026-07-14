@@ -37,8 +37,7 @@ pdfplumber>=0.10.0
 
 # OCR for scanned PDFs (pytesseract — used in rag.py)
 Pillow>=10.0.0
-# pytesseract is optional; install if needed for OCR support
-# pytesseract>=0.3.10
+pytesseract>=0.3.10
 
 # DOCX processing
 python-docx>=0.8.11

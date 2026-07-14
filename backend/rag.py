@@ -497,6 +497,8 @@ def _reciprocal_rank_fusion(
 
 # ── OCR via Tesseract (fast, CPU-native) ─────────────────────────────
 
+_ocr_warning_logged = False  # Log the missing-dependency warning only once
+
 def _ocr_page_tesseract(file_path: str, page_index: int) -> str:
     """OCR a single PDF page using PyMuPDF rendering + Tesseract.
 
@@ -506,6 +508,7 @@ def _ocr_page_tesseract(file_path: str, page_index: int) -> str:
 
     Returns extracted text, or empty string on failure.
     """
+    global _ocr_warning_logged
     try:
         import fitz
         import pytesseract
@@ -526,7 +529,9 @@ def _ocr_page_tesseract(file_path: str, page_index: int) -> str:
             if os.path.isfile(win_path):
                 pytesseract.pytesseract.tesseract_cmd = win_path
             else:
-                logger.warning("Tesseract binary not found on PATH or default location")
+                if not _ocr_warning_logged:
+                    logger.warning("Tesseract binary not found on PATH or default location")
+                    _ocr_warning_logged = True
                 return ""
 
         pil_image = Image.open(_io.BytesIO(img_bytes))
@@ -534,8 +539,10 @@ def _ocr_page_tesseract(file_path: str, page_index: int) -> str:
         return text.strip()
 
     except ImportError as ie:
-        logger.warning(f"OCR dependency missing: {ie}. "
-                       "Install PyMuPDF and pytesseract (+ Tesseract binary).")
+        if not _ocr_warning_logged:
+            logger.warning(f"OCR dependency missing: {ie}. "
+                           "Install PyMuPDF and pytesseract (+ Tesseract binary).")
+            _ocr_warning_logged = True
         return ""
     except Exception as e:
         logger.warning(f"Tesseract OCR failed for page {page_index + 1}: {e}")

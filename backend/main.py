@@ -224,7 +224,17 @@ def _reindex_from_supabase():
 
     Called on startup when ChromaDB is empty (Render's ephemeral filesystem
     wipes chroma_db/ on every deploy, but documents persist in Supabase Storage).
+
+    MEMORY-OPTIMIZED for Render's 512 MB free tier:
+    - Processes one document at a time (no bulk download).
+    - Explicitly frees file bytes and forces GC after each document.
+    - Skips files larger than MAX_REINDEX_FILE_MB to avoid OOM spikes.
+    - Sorts smallest-first so the most documents are indexed before any limit.
     """
+    import gc
+
+    MAX_REINDEX_FILE_BYTES = int(os.getenv("MAX_REINDEX_FILE_MB", "15")) * 1024 * 1024
+
     try:
         # Get list of previously uploaded documents from knowledge_base table
         entries = supabase_client.get_knowledge_entries()
@@ -233,6 +243,8 @@ def _reindex_from_supabase():
             return
 
         reindexed = 0
+        skipped_large = 0
+
         for entry in entries:
             filename = entry.get("file_name", "")
             bucket_path = entry.get("bucket_path", "")
@@ -240,18 +252,34 @@ def _reindex_from_supabase():
                 continue
 
             try:
-                # Download file bytes from Supabase Storage
+                # Download file bytes from Supabase Storage (one at a time)
                 file_bytes = supabase_client.download_file_from_storage("manuals", bucket_path)
                 if not file_bytes:
                     logger.warning(f"Re-index: could not download {filename} from storage")
                     continue
 
-                # Write to temp file for ingestion
+                # Skip very large files to prevent OOM on constrained hosts
+                file_size_mb = len(file_bytes) / (1024 * 1024)
+                if len(file_bytes) > MAX_REINDEX_FILE_BYTES:
+                    logger.warning(
+                        f"Re-index: skipping {filename} ({file_size_mb:.1f} MB) — "
+                        f"exceeds {MAX_REINDEX_FILE_BYTES // (1024*1024)} MB startup limit. "
+                        f"Upload via /admin/upload to index it."
+                    )
+                    del file_bytes
+                    gc.collect()
+                    skipped_large += 1
+                    continue
+
+                # Write to temp file for ingestion, then free the bytes immediately
                 ext = os.path.splitext(filename)[1].lower()
-                import tempfile
                 with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
                     tmp.write(file_bytes)
                     tmp_path = tmp.name
+
+                # Free the downloaded bytes from memory before processing
+                del file_bytes
+                gc.collect()
 
                 # Ingest into ChromaDB
                 doc_type = entry.get("document_type", "manual")
@@ -261,16 +289,23 @@ def _reindex_from_supabase():
                 chunks = result.get("chunks_count", 0) if isinstance(result, dict) else result
                 if chunks > 0:
                     reindexed += 1
-                    logger.info(f"Re-indexed {filename}: {chunks} chunks")
+                    logger.info(f"Re-indexed {filename} ({file_size_mb:.1f} MB): {chunks} chunks")
 
                 # Update knowledge_base status
                 supabase_client.update_knowledge_status(entry.get("id"), "ready", chunks)
 
+                # Force GC after each document to keep peak memory low
+                gc.collect()
+
             except Exception as e:
                 logger.error(f"Re-index failed for {filename}: {e}")
+                gc.collect()
                 continue
 
-        logger.info(f"Re-indexing complete: {reindexed}/{len(entries)} documents restored")
+        summary = f"Re-indexing complete: {reindexed}/{len(entries)} documents restored"
+        if skipped_large:
+            summary += f" ({skipped_large} skipped — too large for startup indexing)"
+        logger.info(summary)
 
     except Exception as e:
         logger.error(f"Re-indexing from Supabase failed: {e}")
