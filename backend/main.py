@@ -289,9 +289,9 @@ def _reindex_from_supabase():
                 del file_bytes
                 gc.collect()
 
-                # Ingest into ChromaDB
+                # Ingest into ChromaDB (skip OCR for fast startup — native text only)
                 doc_type = entry.get("document_type", "manual")
-                result = ingest_single_document(tmp_path, filename, doc_type=doc_type)
+                result = ingest_single_document(tmp_path, filename, doc_type=doc_type, skip_ocr=True)
                 os.unlink(tmp_path)
 
                 chunks = result.get("chunks_count", 0) if isinstance(result, dict) else result

@@ -554,13 +554,17 @@ def _ocr_page_tesseract(file_path: str, page_index: int) -> str:
 
 # ── Document extraction (multi-format) ───────────────────────────────
 
-def _extract_pages_pdf(file_path: str) -> Dict:
+def _extract_pages_pdf(file_path: str, skip_ocr: bool = False) -> Dict:
     """Extract text and tables from a PDF using pdfplumber.
 
     Table-aware extraction: pdfplumber retains spatial layout and converts
     tables into structured markdown-like formats automatically.
     For pages with minimal native text, falls back to Tesseract OCR
     (fast CPU-based OCR via PyMuPDF rendering + pytesseract).
+
+    Args:
+        skip_ocr: If True, skip Tesseract OCR for pages without native text.
+                  Used during startup re-indexing to avoid slow processing.
 
     Returns a dict:
         {
@@ -589,7 +593,7 @@ def _extract_pages_pdf(file_path: str) -> Dict:
 
                 if text and len(text.strip()) >= 50:
                     native_text_pages += 1
-                else:
+                elif not skip_ocr:
                     # OCR fallback via Tesseract (fast, CPU-native)
                     ocr_text = _ocr_page_tesseract(file_path, i)
                     if ocr_text and len(ocr_text.strip()) > 20:
@@ -610,9 +614,11 @@ def _extract_pages_pdf(file_path: str) -> Dict:
             "ocr_required": ocr_required,
         })
 
+        skipped_msg = " [OCR skipped — fast mode]" if skip_ocr else ""
         logger.info(f"PDF extraction complete: {len(pages)} pages with text "
                     f"({ocr_pages_count} via OCR) from {total_pages} total pages"
-                    f"{' [FULL OCR — no native text layer]' if ocr_required else ''}")
+                    f"{' [FULL OCR — no native text layer]' if ocr_required else ''}"
+                    f"{skipped_msg}")
         return result
 
     except ImportError:
@@ -732,7 +738,7 @@ def _extract_pages_txt(file_path: str) -> List[Dict]:
         return []
 
 
-def _extract_pages(file_path: str) -> Dict:
+def _extract_pages(file_path: str, skip_ocr: bool = False) -> Dict:
     """Route to the correct extractor based on file extension.
 
     Returns a dict with keys:
@@ -754,7 +760,7 @@ def _extract_pages(file_path: str) -> Dict:
         }
 
     if ext == ".pdf":
-        return _extract_pages_pdf(file_path)
+        return _extract_pages_pdf(file_path, skip_ocr=skip_ocr)
     elif ext == ".docx":
         return _wrap(_extract_pages_docx(file_path))
     elif ext == ".pptx":
@@ -803,7 +809,7 @@ def load_manuals_into_rag() -> bool:
         return False
 
 
-def ingest_single_document(file_path: str, source_name: str = "", doc_type: str = "manual") -> Dict:
+def ingest_single_document(file_path: str, source_name: str = "", doc_type: str = "manual", skip_ocr: bool = False) -> Dict:
     """
     Ingest a single document (PDF/DOCX/PPTX/TXT): extract → chunk → upsert into ChromaDB.
 
@@ -819,13 +825,14 @@ def ingest_single_document(file_path: str, source_name: str = "", doc_type: str 
         file_path: Path to the document file.
         source_name: Display name for citation metadata.
         doc_type: Document type tag — 'manual', 'policy', 'faq', or 'other'.
+        skip_ocr: If True, skip Tesseract OCR (used during fast startup re-indexing).
     """
     if not _initialized:
         if not initialize_rag_system():
             raise RuntimeError("Cannot initialize RAG system")
 
     source = source_name or os.path.basename(file_path)
-    extraction = _extract_pages(file_path)
+    extraction = _extract_pages(file_path, skip_ocr=skip_ocr)
     pages = extraction.get("pages", [])
     ocr_pages = extraction.get("ocr_pages", 0)
     total_pages = extraction.get("total_pages", 0)
@@ -1060,7 +1067,7 @@ def search_knowledge_with_metadata(query: str, k: int = 5, skip_expansion: bool 
         doc_count = _collection.count() if _collection else 0
         if doc_count == 0:
             logger.warning("RAG hybrid search: collection is empty (0 documents indexed). "
-                           "Upload documents via /admin/upload or place files in backend/data/manuals/")
+                           "Upload documents via /admin/upload. Background indexing may still be in progress.")
             return []
 
         # Phase 4: Expand query into variants
