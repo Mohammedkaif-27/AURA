@@ -190,7 +190,11 @@ _ingestion_executor = ThreadPoolExecutor(max_workers=3)
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize services on startup (OPTIMIZED)."""
+    """Initialize services on startup (OPTIMIZED).
+
+    Re-indexing runs in a background thread so the server binds its port
+    immediately — critical for Render's deploy health-check.
+    """
     start_time = time.time()
     logger.info("Starting AURA Backend v2.0...")
 
@@ -208,15 +212,19 @@ async def startup_event():
         logger.info("RAG system initialized successfully.")
 
         # Re-ingest from Supabase Storage if ChromaDB is empty (ephemeral filesystem)
+        # Runs in a BACKGROUND THREAD so the server starts accepting requests immediately.
         from backend.rag import _collection
         if _collection and _collection.count() == 0:
-            logger.info("ChromaDB is empty — re-ingesting documents from Supabase Storage...")
-            _reindex_from_supabase()
+            logger.info("ChromaDB is empty — scheduling background re-ingestion from Supabase Storage...")
+            import threading
+            reindex_thread = threading.Thread(target=_reindex_from_supabase, daemon=True)
+            reindex_thread.start()
     else:
         logger.error("Failed to initialize RAG system")
 
     elapsed = time.time() - start_time
     logger.info(f"AURA Backend is ready! (Startup took {elapsed:.2f}s)")
+
 
 
 def _reindex_from_supabase():
