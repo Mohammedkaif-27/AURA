@@ -100,8 +100,8 @@ class HuggingFaceAPIEmbeddingFunction(EmbeddingFunction):
         from requests.adapters import HTTPAdapter
 
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,            # 1s, 2s, 4s
+            total=5,
+            backoff_factor=2,            # 2s, 4s, 8s, 16s, 32s
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["POST"],
             raise_on_status=False,
@@ -643,21 +643,38 @@ def _extract_pages_pdf(file_path: str, skip_ocr: bool = False, lightweight: bool
 
 
 def _extract_pages_pdf_fallback(file_path: str) -> List[Dict]:
-    """Fallback PDF extraction using pypdf (if PyMuPDF unavailable)."""
+    """Fallback PDF extraction using PyMuPDF first, then pypdf."""
     try:
-        from pypdf import PdfReader
-        reader = PdfReader(file_path)
+        import fitz
+        doc = fitz.open(file_path)
         pages = []
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text() or ""
+        for i, page in enumerate(doc):
+            text = page.get_text() or ""
             if text.strip():
                 pages.append({"page": i + 1, "text": text})
+        doc.close()
         return pages
     except ImportError:
-        logger.error("Neither PyMuPDF nor pypdf available for PDF extraction")
-        return []
+        try:
+            import logging
+            # Silence the spammy KSCms-UHC-H font encoding errors from pypdf
+            logging.getLogger("pypdf").setLevel(logging.CRITICAL)
+            from pypdf import PdfReader
+            reader = PdfReader(file_path)
+            pages = []
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                if text.strip():
+                    pages.append({"page": i + 1, "text": text})
+            return pages
+        except ImportError:
+            logger.error("Neither PyMuPDF nor pypdf available for PDF extraction")
+            return []
+        except Exception as e:
+            logger.error(f"Fallback PDF extraction failed with pypdf: {e}")
+            return []
     except Exception as e:
-        logger.error(f"Fallback PDF extraction failed: {e}")
+        logger.error(f"Fallback PDF extraction failed with PyMuPDF: {e}")
         return []
 
 
