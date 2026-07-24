@@ -418,7 +418,6 @@ AURA/
 │   │   │   └── TypingIndicator.jsx   # Bot typing animation
 │   │   └── lib/
 │   │       └── supabase.js           # Supabase client initialization
-│   ├── vercel.json                   # SPA routing rewrites for Vercel
 │   └── index.html
 │
 ├── admin/                            # Admin Dashboard (React 19 + Vite)
@@ -442,7 +441,6 @@ AURA/
 │   │   │   └── LiveCenter.jsx        # Real-time chat monitoring
 │   │   └── lib/
 │   │       └── supabase.js           # Supabase client initialization
-│   ├── vercel.json                   # SPA routing rewrites for Vercel
 │   └── index.html
 │
 ├── .env.example                      # Environment variable template
