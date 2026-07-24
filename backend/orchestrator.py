@@ -1,13 +1,58 @@
 """
-AURA Orchestrator — Coordinates the agent pipeline for each user message.
+AURA Backend — Orchestrator
 
-OPTIMIZED:
-- Single RAG search (was doing two separate calls).
-- Greetings skip RAG entirely (< 500ms response).
-- Verifier disabled by default.
-- Structured logging: one summary line per request.
-- All LLM call count reduced to 1 (responder only).
+Purpose:
+    The central brain of the chat system. Routes every user message
+    through the various agents, manages session state, and executes actions.
+
+Responsibilities:
+    - Load user session (previous chat history, known order info)
+    - Pass message to Intent Agent
+    - Retrieve documents via RAG (if needed)
+    - Enforce business policies (e.g. 30-day refund window)
+    - Pass context to Responder Agent (LLM)
+    - Trigger operational actions and send emails
+    - Save conversation history to Supabase
+
+Workflow:
+    ┌─────────────────────────────────────────────────────┐
+    │  User Message: "My TV screen is cracked"            │
+    │      │                                              │
+    │      ▼                                              │
+    │  Session Manager (loads past context & order ID)    │
+    │      │                                              │
+    │      ▼                                              │
+    │  Intent Agent  →  "replacement"                     │
+    │      │                                              │
+    │      ▼                                              │
+    │  Retrieval Agent (RAG)  → fetches replacement policy│
+    │      │                                              │
+    │      ▼                                              │
+    │  Policy Enforcement → checks 30-day return window   │
+    │      │                                              │
+    │      ▼                                              │
+    │  Responder Agent (LLM) → drafts response            │
+    │      │                                              │
+    │      ▼                                              │
+    │  Action Agent → decides to execute replacement      │
+    │      │                                              │
+    │      ▼                                              │
+    │  Execute Action & Send Email                        │
+    └─────────────────────────────────────────────────────┘
+
+    Why this pipeline?
+        Instead of one massive LLM call trying to do everything (slow,
+        prone to hallucinations), we break it into deterministic steps.
+        Only the Responder step uses the LLM, keeping the system fast
+        and predictable.
+
+Used By:
+    main.py (/chat endpoint)
+
+Depends On:
+    agents.py, rag.py, session_manager.py, order_lookup.py, notifications.py
 """
+
 
 import time
 import logging

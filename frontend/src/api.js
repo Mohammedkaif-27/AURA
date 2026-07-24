@@ -42,16 +42,3 @@ export async function deleteSession(sessionId, token) {
   if (!res.ok) throw new Error('Failed to delete session');
   return res.json();
 }
-
-export async function renameSession(sessionId, title, token) {
-  const res = await fetch(`${API_BASE}/chat/sessions/${sessionId}`, {
-    method: 'PATCH',
-    headers: { 
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify({ title }),
-  });
-  if (!res.ok) throw new Error('Failed to rename session');
-  return res.json();
-}

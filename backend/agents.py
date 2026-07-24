@@ -1,12 +1,61 @@
 """
-AURA Agents — Intent, Retrieval, Responder, Verifier, Action, Execution.
+AURA Backend — Agents
 
-OPTIMIZED:
-- Intent classification is now DETERMINISTIC (regex/keyword, no LLM call).
-- Verifier is disabled by default (ENABLE_VERIFIER=false).
-- Action confirmation uses predefined templates (no LLM call).
-- `should_use_rag()` helper skips RAG for greetings/short replies.
-- Net result: 1 LLM call per message (responder only), down from 3–4.
+Purpose:
+    Specialized "agents" that each handle one step of the chat pipeline.
+    Together they form a multi-agent architecture where each agent has
+    a single, well-defined responsibility.
+
+Responsibilities:
+    - Classify user intent (deterministic, no LLM)
+    - Retrieve documents from the knowledge base
+    - Generate human-like responses using LLM + retrieved context
+    - Verify responses for hallucinations (optional)
+    - Decide and execute operational actions (refund, replacement, service)
+
+Agent Pipeline:
+    ┌─────────────────────────────────────────────────────┐
+    │  User Message                                       │
+    │      │                                              │
+    │      ▼                                              │
+    │  Intent Agent  (deterministic regex — no LLM)       │
+    │      │                                              │
+    │      ▼                                              │
+    │  should_use_rag()  →  skip for greetings/short msgs │
+    │      │                                              │
+    │      ▼                                              │
+    │  Retrieval Agent  →  ChromaDB + BM25 hybrid search  │
+    │      │                                              │
+    │      ▼                                              │
+    │  Responder Agent  →  LLM generates answer from      │
+    │      │                 retrieved context             │
+    │      ▼                                              │
+    │  Verifier Agent   →  (optional) checks for          │
+    │      │                 hallucinations                │
+    │      ▼                                              │
+    │  Action Agent     →  decides: refund? replacement?   │
+    │      │                 service booking? or none?     │
+    │      ▼                                              │
+    │  Execute Action   →  save record + send email       │
+    └─────────────────────────────────────────────────────┘
+
+    Performance:
+        Intent + Action agents are deterministic (regex/dict lookup).
+        Only the Responder uses an LLM call.
+        Verifier is disabled by default.
+        Net result: ~1 LLM call per message.
+
+Used By:
+    orchestrator.py  (calls agents in sequence)
+
+Depends On:
+    llm_client.py  — get_completion()
+    rag.py         — search_knowledge()
+
+Related Files:
+    orchestrator.py  — orchestrates the agent pipeline
+    llm_client.py    — LLM API gateway
+    rag.py           — vector + keyword retrieval
 """
 
 import os
@@ -27,13 +76,21 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# ── Configuration ────────────────────────────────────────────────────
+
+# ==========================================================
+# CONFIGURATION
+# ==========================================================
 ENABLE_VERIFIER = os.getenv("ENABLE_VERIFIER", "false").lower() == "true"
 
 
-# ────────────────────────── RAG SKIP LOGIC ─────────────────────────
+# ==========================================================
+# RAG SKIP LOGIC
+# ==========================================================
+# Why skip RAG for some messages?
+# Greetings like "hi" or "thanks" don't need a knowledge base search.
+# Skipping RAG for these saves an embedding computation + ChromaDB
+# query, making the response ~500ms faster.
 
-# Messages that should NOT trigger RAG retrieval
 _SKIP_RAG_EXACT = frozenset({
     "hi", "hello", "hey", "hii", "hiii", "helo", "hola",
     "thanks", "thank you", "thankyou", "thx", "ty",
@@ -44,7 +101,7 @@ _SKIP_RAG_EXACT = frozenset({
     "hmm", "oh", "ah", "wow",
 })
 
-# Intents that DO need RAG
+# Intents that DO need RAG (they require document evidence)
 _RAG_INTENTS = frozenset({
     "troubleshoot", "product_information", "refund",
     "replacement", "service_booking", "order_status",
@@ -52,22 +109,15 @@ _RAG_INTENTS = frozenset({
 
 
 def should_use_rag(message: str, intent: str) -> bool:
-    """Decide whether RAG retrieval is needed for this message.
-
-    Skip RAG for greetings, short acknowledgments, and conversational filler.
-    Run RAG for troubleshooting, product questions, policies, etc.
-    """
+    """Decide whether RAG retrieval is needed for this message."""
     normalized = message.strip().lower().rstrip("!?.,")
 
-    # Exact match against skip list
     if normalized in _SKIP_RAG_EXACT:
         return False
 
-    # Very short messages are unlikely to be knowledge queries
     if len(normalized) < 4:
         return False
 
-    # Intent-based decision
     if intent in _RAG_INTENTS:
         return True
 
@@ -78,7 +128,20 @@ def should_use_rag(message: str, intent: str) -> bool:
     return False
 
 
-# ────────────────────────── INTENT AGENT ──────────────────────────
+# ==========================================================
+# INTENT AGENT
+#
+# Role:
+#     Classify what the user wants (refund, troubleshoot, etc.)
+#
+# Why deterministic (no LLM)?
+#     Calling the LLM just to classify intent wastes ~300ms and
+#     a rate-limited API call.  Regex patterns are instant, free,
+#     and equally accurate for our use cases.
+#
+# Input:  User message (str)
+# Output: Intent label (str) — e.g. "refund", "troubleshoot"
+# ==========================================================
 
 # Keyword → intent mapping (checked in order, first match wins)
 _INTENT_RULES = [
@@ -98,10 +161,7 @@ _INTENT_RULES = [
 
 
 def intent_agent(user_message: str) -> str:
-    """Classify user intent — DETERMINISTIC (no LLM call).
-
-    Uses regex/keyword rules. Falls back to 'general_query' if no match.
-    """
+    """Classify user intent using deterministic regex rules."""
     try:
         msg_lower = user_message.strip().lower()
 
@@ -118,7 +178,22 @@ def intent_agent(user_message: str) -> str:
         return "general_query"
 
 
-# ────────────────────── RETRIEVAL AGENT ───────────────────────────
+# ==========================================================
+# RETRIEVAL AGENT
+#
+# Role:
+#     Find relevant documents from the knowledge base.
+#
+# Why needed?
+#     The LLM has no memory of company documents (manuals, policies).
+#     We must search the knowledge base first and pass the results
+#     as context so the LLM can give evidence-based answers.
+#     This prevents hallucinations.
+#
+# Input:  User query (str)
+# Output: Retrieved document text (str)
+# Used By: orchestrator.py
+# ==========================================================
 
 def retrieval_agent(query: str) -> str:
     """Retrieve relevant context from the knowledge base."""
@@ -132,10 +207,25 @@ def retrieval_agent(query: str) -> str:
         return ""
 
 
-# ────────────────────── RESPONDER AGENT ───────────────────────────
+# ==========================================================
+# RESPONDER AGENT
+#
+# Role:
+#     Generate the final human-like reply using LLM + context.
+#
+# Why not just call the LLM directly?
+#     The raw LLM would hallucinate (make up answers).
+#     By injecting retrieved context into the prompt, we force
+#     the LLM to answer ONLY from verified documents.
+#
+# Prompt Objective:  Answer accurately from provided context only.
+# Temperature:       0.3 (low creativity — factual answers)
+# Input:  context (retrieved docs), message (user query), session_context
+# Output: Natural language response (str)
+# ==========================================================
 
 def responder_agent(context: str, message: str, session_context: str = "") -> str:
-    """Generate the main human-like reply using retrieved context."""
+    """Generate the main response using retrieved context + LLM."""
     try:
         system_prompt = (
             "You are AURA, a professional and empathetic customer support executive.\n\n"
@@ -191,14 +281,30 @@ def responder_agent(context: str, message: str, session_context: str = "") -> st
         return "I apologize, but I'm having trouble processing your request. Please try again."
 
 
-# ────────────────────── VERIFIER AGENT ────────────────────────────
+# ==========================================================
+# VERIFIER AGENT
+#
+# Role:
+#     Check the responder's draft for hallucinations and fix them.
+#
+# Why?
+#     Even with context injection, the LLM can still hallucinate
+#     details (wrong page numbers, invented procedures).  The
+#     verifier cross-checks every claim against the source context.
+#
+# Disabled by default (ENABLE_VERIFIER=false) because:
+#     - It costs an extra LLM call per message
+#     - The responder prompt is already well-constrained
+#     - Enable it when accuracy is critical (e.g. medical devices)
+#
+# Prompt Objective:  Cross-check claims against context, fix errors.
+# Temperature:       0.1 (minimal creativity — strict fact-checking)
+# Input:  draft_response, context
+# Output: Verified/corrected response (str)
+# ==========================================================
 
 def verifier_agent(draft_response: str, context: str = "") -> str:
-    """Verify draft response quality and accuracy.
-
-    DISABLED by default (ENABLE_VERIFIER=false).
-    Returns draft as-is if verification is disabled or fails.
-    """
+    """Verify draft response for hallucinations and citation accuracy."""
     if not ENABLE_VERIFIER:
         return draft_response
 
@@ -250,13 +356,24 @@ def verifier_agent(draft_response: str, context: str = "") -> str:
         return draft_response  # graceful fallback
 
 
-# ────────────────────── ACTION AGENT ──────────────────────────────
+# ==========================================================
+# ACTION AGENT
+#
+# Role:
+#     Decide whether the user's intent requires an operational
+#     action (refund, replacement, service booking) or just
+#     an informational response.
+#
+# Why deterministic?
+#     The mapping from intent → action is a simple lookup table.
+#     No LLM reasoning is needed.
+#
+# Input:  intent (str)
+# Output: action type (str) — e.g. "initiate_refund" or "none"
+# ==========================================================
 
 def action_agent(intent: str, verified_response: str) -> str:
-    """Decide whether a real operational action is required.
-
-    DETERMINISTIC: Maps intent directly to action (no LLM needed).
-    """
+    """Map intent to operational action (deterministic lookup)."""
     try:
         intent_to_action = {
             "refund": "initiate_refund",
@@ -277,9 +394,13 @@ def action_agent(intent: str, verified_response: str) -> str:
         return "none"
 
 
-# ──────────────── ACTION CONFIRMATION AGENT ───────────────────────
+# ==========================================================
+# ACTION CONFIRMATION
+# ==========================================================
+# Why templates instead of LLM?
+# Confirmation messages are always the same for each action type.
+# Using templates is instant, consistent, and free.
 
-# Predefined confirmation templates (no LLM call)
 _CONFIRMATION_TEMPLATES = {
     "initiate_refund": (
         "I'd like to process a refund for you. "
@@ -300,10 +421,7 @@ _CONFIRMATION_TEMPLATES = {
 
 
 def action_confirmation_agent(action_type: str) -> Optional[str]:
-    """Return a confirmation message for the action.
-
-    Uses predefined templates instead of an LLM call.
-    """
+    """Return a confirmation message for the given action type."""
     try:
         if action_type == "none":
             return None
@@ -313,7 +431,6 @@ def action_confirmation_agent(action_type: str) -> Optional[str]:
             logger.info(f"Confirmation message (template): {action_type}")
             return message
 
-        # Fallback for unknown action types
         return f"To proceed with {action_type}, please confirm."
 
     except Exception as e:
@@ -321,10 +438,12 @@ def action_confirmation_agent(action_type: str) -> Optional[str]:
         return f"To proceed with {action_type}, please confirm."
 
 
-# ──────────────── ACTION EXECUTION (unchanged) ────────────────────
+# ==========================================================
+# ACTION EXECUTION
+# ==========================================================
 
 def generate_action_id(action_type: str) -> str:
-    """Generate unique action ID in format: REF-YYYYMMDD-XXXX."""
+    """Generate unique action ID (e.g. REF-20260724-0001)."""
     try:
         date_str = datetime.now().strftime("%Y%m%d")
 
@@ -356,7 +475,7 @@ def generate_action_id(action_type: str) -> str:
 
 
 def save_action_data(action_type: str, action_data: dict):
-    """Save action data to appropriate JSON file."""
+    """Persist action record to local JSON file."""
     try:
         if action_type == "initiate_refund":
             file_path = Path(__file__).parent / "data" / "refunds.json"
@@ -388,7 +507,13 @@ def save_action_data(action_type: str, action_data: dict):
 
 
 def execute_action(action: str, user_details: dict = None):
-    """Execute the determined action with data persistence."""
+    """
+    Execute the determined action and persist the record.
+
+    Called By:  orchestrator.py → process_message() (action branch)
+    Calls:     generate_action_id(), save_action_data()
+    Returns:   {"action": ..., "action_id": ..., "status": ..., "data": ...}
+    """
     try:
         logger.info(f"Executing action: {action}")
 

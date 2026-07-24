@@ -1,10 +1,54 @@
 """
-AURA Session Manager — Manages chat session state and persistence.
+AURA Backend — Session Manager
 
-OPTIMIZED:
-- Sessions survive server restarts via Supabase check-before-create.
-- Uses UPSERT to prevent 409 duplicate key errors.
-- Reduced noisy per-field logging.
+Purpose:
+    Track the state of each customer conversation across the chat
+    lifecycle.  Stores order context, collected information, and
+    conversation history.
+
+Responsibilities:
+    - Create / retrieve / update chat sessions
+    - Persist messages to Supabase (survives server restarts)
+    - Keep in-memory state for temporary workflow variables
+      (reason_for_action, preferred_datetime, etc.)
+    - Check what information is still missing before executing actions
+    - Build formatted context strings for agent prompts
+
+Architecture:
+    There are TWO layers of session storage:
+
+    ┌──────────────────────────────────────────────────┐
+    │  In-Memory (SESSION_STATE dict)                  │
+    │  - Fast reads/writes                             │
+    │  - Holds temporary workflow vars                 │
+    │  - Lost on server restart                        │
+    └──────────────────────────────────────────────────┘
+                        │
+                        ▼
+    ┌──────────────────────────────────────────────────┐
+    │  Supabase (chat_sessions + chat_messages tables) │
+    │  - Persistent across restarts                    │
+    │  - Row-Level Security per user                   │
+    │  - Stores message history + session metadata     │
+    └──────────────────────────────────────────────────┘
+
+    Why both?
+        In-memory state is fast and holds workflow-specific variables
+        (like "reason_for_action") that don't need to persist to the DB.
+        Supabase stores the durable data (messages, session title) so
+        chat history survives server restarts.
+
+Used By:
+    orchestrator.py  (every message goes through session manager)
+    main.py          (session CRUD endpoints)
+
+Depends On:
+    supabase_client.py
+
+Related Files:
+    orchestrator.py     — reads/writes session state during chat
+    main.py             — /chat/sessions endpoints
+    supabase_client.py  — database operations
 """
 
 import logging
@@ -15,20 +59,30 @@ import json
 
 logger = logging.getLogger(__name__)
 
-# In-memory state for temporary workflow vars (reason_for_action, etc.)
-# Base session and messages are persisted to Supabase.
+
+# ==========================================================
+# IN-MEMORY SESSION STATE
+# ==========================================================
+# Why in-memory?
+# Temporary workflow variables (reason_for_action, preferred_datetime)
+# are only needed during the current conversation.  Persisting them
+# to the DB on every update would be slow and unnecessary.
 SESSION_STATE: Dict[str, Dict[str, Any]] = {}
 
 
+# ==========================================================
+# HELPERS
+# ==========================================================
+
 def get_user_supabase(user: dict):
-    """Get a user-scoped Supabase client."""
+    """Get a user-scoped Supabase client (for RLS)."""
     if not user or "token" not in user:
         return None
     return supabase_client.get_user_client(user["token"])
 
 
 def _default_session(session_id: str) -> Dict[str, Any]:
-    """Return a fresh session dict with defaults."""
+    """Return a fresh session dict with all fields set to defaults."""
     return {
         "session_id": session_id,
         "created_at": datetime.now().isoformat(),
@@ -55,10 +109,21 @@ def _default_session(session_id: str) -> Dict[str, Any]:
     }
 
 
-def create_session(session_id: str, user: dict = None) -> Dict[str, Any]:
-    """Initialize a new session with empty data.
+# ==========================================================
+# SESSION LIFECYCLE  (create / get / update)
+# ==========================================================
 
-    Uses UPSERT to prevent 409 duplicate key errors after server restarts.
+def create_session(session_id: str, user: dict = None) -> Dict[str, Any]:
+    """
+    Initialize a new session.
+
+    Why UPSERT?
+        After a server restart, the session may already exist in
+        Supabase but not in memory.  Using UPSERT (instead of INSERT)
+        prevents 409 duplicate-key errors.
+
+    Called By:  get_session(), orchestrator.py
+    Returns:   The session dict.
     """
     try:
         if session_id in SESSION_STATE:
@@ -68,7 +133,7 @@ def create_session(session_id: str, user: dict = None) -> Dict[str, Any]:
         if user and "email" in user:
             SESSION_STATE[session_id]["customer_email"] = user["email"]
 
-        # Persist to Supabase using UPSERT (prevents duplicate key errors)
+        # Persist to Supabase using UPSERT
         client = get_user_supabase(user)
         if client:
             try:
@@ -90,10 +155,17 @@ def create_session(session_id: str, user: dict = None) -> Dict[str, Any]:
 
 
 def get_session(session_id: str, user: dict = None) -> Optional[Dict[str, Any]]:
-    """Retrieve session data — checks in-memory first, then Supabase.
+    """
+    Retrieve session data — checks in-memory first, then Supabase.
 
-    On server restart, in-memory state is lost. This function checks
-    Supabase before creating a new session to avoid duplicates.
+    Why check Supabase?
+        On server restart, in-memory state is empty.  This function
+        checks Supabase before creating a brand-new session, so the
+        user's existing chat history is preserved.
+
+    Called By:  orchestrator.py (every message), get_session_context(),
+               check_missing_info_for_action()
+    Returns:   Session dict, or None on error.
     """
     try:
         # In-memory hit
@@ -128,10 +200,8 @@ def update_session(session_id: str, key: str, value: Any) -> bool:
     try:
         if session_id not in SESSION_STATE:
             create_session(session_id)
-
         SESSION_STATE[session_id][key] = value
         return True
-
     except Exception as e:
         logger.error(f"Error updating session: {e}")
         return False
@@ -142,19 +212,27 @@ def update_session_bulk(session_id: str, data: Dict[str, Any]) -> bool:
     try:
         if session_id not in SESSION_STATE:
             create_session(session_id)
-
         for key, value in data.items():
             SESSION_STATE[session_id][key] = value
-
         return True
-
     except Exception as e:
         logger.error(f"Error bulk updating session: {e}")
         return False
 
 
+# ==========================================================
+# CONVERSATION HISTORY
+# ==========================================================
+
 def add_to_conversation_history(session_id: str, role: str, message: str, user: dict = None, sources: list = None):
-    """Add a message to the conversation history and persist to Supabase."""
+    """
+    Append a message to the conversation and persist it to Supabase.
+
+    Also auto-titles the session based on the first user message
+    (e.g. "How do I clean my air pur..." becomes the sidebar title).
+
+    Called By:  orchestrator.py (after each user/assistant message)
+    """
     try:
         if session_id not in SESSION_STATE:
             create_session(session_id, user)
@@ -186,20 +264,22 @@ def add_to_conversation_history(session_id: str, role: str, message: str, user: 
         logger.error(f"Error adding to conversation history: {e}")
 
 
-def clear_session(session_id: str) -> bool:
-    """Clear session data."""
-    try:
-        if session_id in SESSION_STATE:
-            del SESSION_STATE[session_id]
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"Error clearing session: {e}")
-        return False
-
+# ==========================================================
+# CONTEXT GENERATION (for agent prompts)
+# ==========================================================
 
 def get_session_context(session_id: str) -> str:
-    """Get formatted session context for agent prompts."""
+    """
+    Build a formatted string of everything we know about the customer.
+
+    Why?
+        The LLM has no memory between requests.  This function collects
+        all known order/customer data and formats it so the LLM can
+        reference it when generating a response.
+
+    Called By:  orchestrator.py → process_message()
+    Returns:   A formatted string like "Known Information:\\n- Order ID: ORD301\\n..."
+    """
     try:
         session = get_session(session_id)
         if not session:
@@ -234,34 +314,12 @@ def get_session_context(session_id: str) -> str:
         return ""
 
 
-def set_conversation_state(session_id: str, state: str) -> bool:
-    """Set conversation state: collecting_info, ready_for_action, action_executed, completed."""
-    valid_states = ["collecting_info", "ready_for_action", "action_executed", "completed"]
-    if state not in valid_states:
-        logger.error(f"Invalid state: {state}")
-        return False
-    return update_session(session_id, "conversation_state", state)
-
-
-def get_conversation_state(session_id: str) -> str:
-    """Get current conversation state."""
-    session = get_session(session_id)
-    return session.get("conversation_state", "collecting_info") if session else "collecting_info"
-
-
-def is_info_complete(session_id: str) -> bool:
-    """Check if all required information has been collected."""
-    session = get_session(session_id)
-    if not session:
-        return False
-    has_order_id = session.get("order_id") is not None
-    has_customer = session.get("customer_name") is not None
-    has_product = session.get("product_name") is not None
-    return has_order_id or (has_customer and has_product)
-
+# ==========================================================
+# ACTION TRACKING
+# ==========================================================
 
 def mark_action_completed(session_id: str, action_id: str, action_type: str) -> bool:
-    """Mark that an action has been completed."""
+    """Record that an action (refund/replacement/service) was executed."""
     try:
         if session_id not in SESSION_STATE:
             return False
@@ -275,17 +333,25 @@ def mark_action_completed(session_id: str, action_id: str, action_type: str) -> 
         return False
 
 
-def get_all_sessions():
-    """Get all active sessions (for debugging)."""
-    return SESSION_STATE
-
+# ==========================================================
+# VALIDATION  (pre-action checks)
+# ==========================================================
 
 def check_missing_info_for_action(session_id: str, action_type: str) -> dict:
-    """Check what information is missing for completing an action.
+    """
+    Check what information is still missing before executing an action.
 
-    Requirements:
-    - Refund/Replacement: Order ID + Reason
-    - Service Booking: Order ID + Preferred Date/Time
+    Why?
+        Before processing a refund, replacement, or service booking,
+        we need specific data (Order ID, reason, date/time).  This
+        function tells the orchestrator what to ask the user next.
+
+    Requirements by action type:
+        - Refund / Replacement:  Order ID + Reason
+        - Service Booking:       Order ID + Preferred Date/Time
+
+    Called By:  orchestrator.py → process_message() (action branch)
+    Returns:   {"missing": [...], "complete": bool, "prompt": str}
     """
     try:
         session = get_session(session_id)

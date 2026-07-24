@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/Supabase-PostgreSQL-3FCF8E?style=for-the-badge&logo=supabase&logoColor=white" />
   <img src="https://img.shields.io/badge/ChromaDB-Vector_Store-FF6F61?style=for-the-badge" />
   <img src="https://img.shields.io/badge/Groq-LPU_Inference-F55036?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/HuggingFace-Inference_API-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" />
+  <img src="https://img.shields.io/badge/HuggingFace-Local_Models-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" />
 </p>
 
 ---
@@ -79,7 +79,6 @@ graph TD
     subgraph External_APIs ["External Services"]
         LLM_Groq[Groq LPU ‒ Llama 3.3 70B]
         LLM_NVIDIA[NVIDIA NIM ‒ Fallback]
-        Embed_HF[HF Inference API ‒ BGE Embeddings]
         Email_SMTP[SMTP / Resend Email]
     end
 
@@ -89,7 +88,6 @@ graph TD
     API_Gateway --> Orchestration
 
     Agent_Retrieval --> DB_Chroma
-    Agent_Retrieval --> Embed_HF
     Agent_Responder --> LLM_Groq
     Agent_Responder -.-> LLM_NVIDIA
     Agent_Execution --> DB_Supabase
@@ -97,7 +95,6 @@ graph TD
 
     API_Upload --> Storage_Docs
     API_Upload --> DB_Chroma
-    API_Upload --> Embed_HF
 
     API_Admin --> DB_Supabase
     API_Sessions --> DB_Supabase
@@ -121,7 +118,7 @@ graph LR
 
     RAGDecision -->|Yes| QueryExp["Query Expansion LLM-assisted"]
     QueryExp -->|7. Hybrid Search| BM25["BM25 Keyword Index"]
-    QueryExp -->|7. Hybrid Search| VectorDB["ChromaDB via HF API"]
+    QueryExp -->|7. Hybrid Search| VectorDB["ChromaDB via Local Model"]
     BM25 -->|8. Reciprocal Rank Fusion| Fusion[RRF Merger]
     VectorDB -->|8. Reciprocal Rank Fusion| Fusion
     Fusion -->|9. Rank Top-K| RerankerNode["RRF Weighted Ranking"]
@@ -373,7 +370,6 @@ graph TD
 
     subgraph External ["External APIs"]
         Groq["Groq LPU Llama 3.3 70B"]
-        HF_API["HF Inference API BGE Embeddings"]
         EmailProvider["SMTP / Resend"]
     end
 
@@ -385,7 +381,6 @@ graph TD
     FastAPI_App --> OrchestratorNode
     OrchestratorNode --> RAG_Engine
     RAG_Engine --> ChromaDB_Vol
-    RAG_Engine --> HF_API
     FastAPI_App --> PostgreSQL
     FastAPI_App --> Auth
     FastAPI_App --> BlobStorage
@@ -477,10 +472,10 @@ The system employs a pipeline of specialized agents, but is architected to use o
 Rather than relying solely on vector similarity, AURA implements a sophisticated 4-stage retrieval pipeline:
 1. **LLM-based Query Expansion** — Rewrites the user query with alternative terminology
 2. **BM25 Keyword Search** — Captures exact term matches that embeddings might miss
-3. **Vector Similarity Search** — ChromaDB cosine similarity over BGE embeddings (via HF Inference API — zero local RAM)
+3. **Vector Similarity Search** — ChromaDB cosine similarity over local BGE embeddings
 4. **Reciprocal Rank Fusion (RRF)** — Merges BM25 and vector results into a weighted unified ranking
 
-The HF Inference API approach eliminates the need for local PyTorch/sentence-transformers, reducing server RAM from ~600MB to ~100MB while maintaining full embedding quality. This hybrid approach consistently outperforms pure vector search, especially for product-specific technical queries containing model numbers and error codes.
+This fully local approach guarantees absolute data privacy and zero API latency for embeddings, while maintaining robust retrieval quality.
 
 **3. Deterministic Policy Enforcement**
 
@@ -530,7 +525,6 @@ The knowledge base accepts PDF, DOCX, and PPTX uploads with:
 - **Node.js 18+**
 - A free [Supabase](https://supabase.com) project
 - A free [Groq](https://console.groq.com) API key
-- A free [Hugging Face](https://huggingface.co/settings/tokens) access token (for remote embeddings)
 
 ### 1. Clone and Configure
 
@@ -540,7 +534,7 @@ cd AURA
 
 # Create .env from template
 cp .env.example .env
-# Fill in your GROQ_API_KEY, HF_TOKEN, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
+# Fill in your GROQ_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 ```
 
 ### 2. Set Up the Database
@@ -584,8 +578,8 @@ Open `http://localhost:5174`.
 |-------|-----------|---------|
 | **LLM Inference** | Groq (Llama 3.3 70B) | Ultra-fast response generation via LPU |
 | **LLM Fallback** | NVIDIA NIM | Secondary provider for resilience |
-| **Embeddings** | HF Inference API (BGE) | Remote, free semantic embeddings via Hugging Face |
-| **Reranker** | Reciprocal Rank Fusion | BM25 + Vector hybrid ranking (zero local RAM) |
+| **Embeddings** | sentence-transformers (BGE) | Local, private semantic embeddings |
+| **Reranker** | local cross-encoder | High accuracy post-retrieval reranking |
 | **Vector Store** | ChromaDB | Persistent vector database |
 | **Keyword Search** | BM25 (rank-bm25) | Complementary lexical retrieval |
 | **Database** | Supabase PostgreSQL | Relational data + Auth + Blob Storage |
@@ -608,8 +602,9 @@ Open `http://localhost:5174`.
 | `SUPABASE_ANON_KEY` | Yes | Supabase anon/public key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key |
 | `EMBEDDING_MODEL` | No | Default: `BAAI/bge-base-en-v1.5` |
-| `HF_TOKEN` | Yes (cloud) | Hugging Face API token for remote embeddings |
-| `RERANKER_MODEL` | No | Default: `cross-encoder/ms-marco-MiniLM-L-6-v2` (skipped in API mode) |
+| `RERANKER_MODEL` | No | Default: `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| `ADMIN_API_KEY` | Yes (for rebuild) | Secure random string for admin API actions |
+| `ENABLE_REBUILD_ENDPOINT` | No | Default: `false`. Set to `true` to allow vector DB rebuilds |
 | `SMTP_HOST` | No | Email server host (default: `smtp.gmail.com`) |
 | `SMTP_USERNAME` | No | Email account username |
 | `SMTP_PASSWORD` | No | Email account app password |

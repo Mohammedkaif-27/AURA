@@ -1,14 +1,47 @@
 """
-AURA Backend — FastAPI Application
+AURA Backend — API Entry Point (FastAPI)
 
-Entry point for the AURA backend API.
-Handles chat, admin operations, document upload with background indexing.
+Purpose:
+    The main web server and API layer for AURA. It exposes HTTP endpoints for
+    the chat interface and the admin dashboard.
 
-OPTIMIZED:
-- Startup preloads LLM client, Embedding model, and Reranker.
-- Supports PDF, DOCX, PPTX uploads.
-- Supports XLSX and JSON order imports.
+Responsibilities:
+    - Host REST endpoints (/chat, /admin/...)
+    - Authenticate users via Supabase JWTs
+    - Handle file uploads (PDF/DOCX) for the Knowledge Base
+    - Run startup checks (pre-loading local models into memory)
+    - Re-index documents from Supabase into local ChromaDB on boot
+
+Architecture:
+    ┌──────────────────────────────────────────────┐
+    │                AURA FastAPI                  │
+    │                                              │
+    │  [Admin Endpoints]      [Chat Endpoints]     │
+    │  - Upload Manuals       - /chat              │
+    │  - Manage Products      - /chat/sessions     │
+    │  - Manage Orders                             │
+    │          │                     │             │
+    └──────────┼─────────────────────┼─────────────┘
+               ▼                     ▼
+        ┌─────────────┐       ┌─────────────┐
+        │ Supabase    │       │ Orchestrator│
+        │ (Postgres + │       │ (RAG + LLM) │
+        │ Storage)    │       └─────────────┘
+        └─────────────┘
+
+    Why do we re-index on startup?
+        Cloud hosts like Render (free tier) wipe the local filesystem
+        on every deploy. We store documents permanently in Supabase Storage,
+        and download them into local ChromaDB when the server boots.
+        This saves memory compared to a managed vector DB.
+
+Used By:
+    Frontend (React), Admin Dashboard (React)
+
+Depends On:
+    orchestrator.py, rag.py, supabase_client.py, llm_client.py
 """
+
 
 import logging
 import os
@@ -19,13 +52,21 @@ import time
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Depends, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
 import io
 
+from backend.config import (
+    EMBEDDING_MODEL,
+    RERANKER_MODEL,
+    CHROMA_COLLECTION,
+    DEVICE,
+    ADMIN_API_KEY,
+    ENABLE_REBUILD_ENDPOINT
+)
 from backend.orchestrator import process_message
 from backend.rag import initialize_rag_system, ingest_single_document
 from backend.llm_client import initialize_llm_client
@@ -198,9 +239,6 @@ async def startup_event():
     start_time = time.time()
     logger.info("Starting AURA Backend v2.0...")
 
-    # Ensure data directories exist (for temp file processing)
-    os.makedirs("backend/data/manuals", exist_ok=True)
-
     # Initialize LLM Client (Singleton)
     if initialize_llm_client():
         logger.info("LLM client initialized")
@@ -210,6 +248,14 @@ async def startup_event():
     # Initialize RAG system (Loads Embedding Model + Reranker + ChromaDB)
     if initialize_rag_system():
         logger.info("RAG system initialized successfully.")
+
+        # Run self-test before accepting requests
+        from backend.rag import _run_startup_self_test
+        try:
+            _run_startup_self_test()
+        except Exception as e:
+            logger.error(f"Startup self-test failed! The server cannot start safely. {e}")
+            raise
 
         # Re-ingest from Supabase Storage if ChromaDB is empty (ephemeral filesystem)
         # Runs in a BACKGROUND THREAD so the server starts accepting requests immediately.
@@ -242,7 +288,7 @@ def _reindex_from_supabase():
     import gc
 
     # Lowered to 5MB to strictly prevent OOM during pdfplumber/ChromaDB spikes
-    MAX_REINDEX_FILE_BYTES = int(os.getenv("MAX_REINDEX_FILE_MB", "15")) * 1024 * 1024
+    MAX_REINDEX_FILE_BYTES = int(os.getenv("MAX_REINDEX_FILE_MB", "50")) * 1024 * 1024
 
     try:
         # Get list of previously uploaded documents from knowledge_base table
@@ -336,7 +382,18 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "AURA Backend", "version": "2.0.0"}
+    from backend.rag import _embedding_dimension, _reranker, _collection
+    return {
+        "status": "ok",
+        "service": "AURA Backend",
+        "version": "2.1.0",
+        "embedding_model": EMBEDDING_MODEL,
+        "embedding_dimension": _embedding_dimension,
+        "device": DEVICE,
+        "reranker": RERANKER_MODEL if _reranker else "unavailable",
+        "documents": _collection.count() if _collection else 0,
+        "collection": CHROMA_COLLECTION,
+    }
 
 
 # ── Chat ─────────────────────────────────────────────────────────────
@@ -404,15 +461,7 @@ def update_session_title(session_id: str, update: SessionUpdate, user: dict = De
 def list_products():
     """Public: list products (used by chat widget quick actions)."""
     products = supabase_client.get_products()
-    if products:
-        return products
-    local_path = os.path.join(os.path.dirname(__file__), "backend", "data", "products.json")
-    if not os.path.exists(local_path):
-        local_path = os.path.join(os.path.dirname(__file__), "data", "products.json")
-    if os.path.exists(local_path):
-        with open(local_path, "r") as f:
-            return json.load(f)
-    return []
+    return products if products else []
 
 
 @app.get("/products/{product_id}")
@@ -546,27 +595,38 @@ def admin_stats(user: dict = Depends(require_admin)):
 def admin_knowledge(user: dict = Depends(require_admin)):
     """List all knowledge-base entries."""
     docs = supabase_client.get_knowledge_entries()
-    if docs:
-        return docs
-    manuals_dir = os.path.join(os.path.dirname(__file__), "data", "manuals")
-    policies_dir = os.path.join(os.path.dirname(__file__), "data", "policies")
-    entries = []
-    for d, doc_type in [(manuals_dir, "manual"), (policies_dir, "policy")]:
-        if os.path.isdir(d):
-            for fname in os.listdir(d):
-                entries.append({
-                    "file_name": fname,
-                    "document_type": doc_type,
-                    "status": "ready",
-                    "chunks_count": 0,
-                })
-    return entries
+    return docs if docs else []
 
 
 @app.get("/admin/sessions")
 def admin_sessions(user: dict = Depends(require_admin)):
     """List active chat sessions."""
     return supabase_client.get_active_sessions()
+
+
+@app.post("/admin/rebuild-collection")
+def admin_rebuild_collection(
+    user: dict = Depends(require_admin),
+    api_key: str = Header(None, alias="X-Admin-API-Key"),
+):
+    """Force a complete rebuild of the ChromaDB collection from source documents.
+    
+    Requires both admin authentication and a valid X-Admin-API-Key header.
+    Also requires ENABLE_REBUILD_ENDPOINT=true in the environment.
+    """
+    if not ENABLE_REBUILD_ENDPOINT:
+        raise HTTPException(status_code=404, detail="Rebuild endpoint is disabled")
+        
+    if not api_key or not ADMIN_API_KEY or api_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin API key")
+        
+    from backend.rag import rebuild_collection
+    
+    success = rebuild_collection()
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to rebuild collection")
+        
+    return {"status": "success", "message": "Collection successfully rebuilt from source documents"}
 
 
 # Supported document types for upload

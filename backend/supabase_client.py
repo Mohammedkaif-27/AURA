@@ -1,8 +1,53 @@
 """
-Supabase Client — Wrapper module for AURA backend.
+AURA Backend — Supabase Client
 
-Provides helper functions for all Supabase operations.
-Falls back gracefully if credentials are not configured (uses local JSON).
+Purpose:
+    Centralized data access layer for all Supabase operations.
+    Every database read/write in the backend goes through this module.
+
+Responsibilities:
+    - Initialize and cache the Supabase client (service role)
+    - Provide user-scoped clients for Row-Level Security (RLS)
+    - CRUD operations for: Products, Orders, Policies, Knowledge Base,
+      Refunds, Chat Sessions
+    - File operations: upload, download, list (Supabase Storage)
+    - Policy resolution: category override → global fallback
+
+Architecture:
+    There are TWO types of Supabase clients:
+
+    ┌──────────────────────────────────────────────────┐
+    │  Service Role Client  (_get_client)              │
+    │  - Uses SUPABASE_SERVICE_ROLE_KEY                │
+    │  - Bypasses Row-Level Security                   │
+    │  - Used for: admin operations, background tasks  │
+    └──────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────┐
+    │  User-Scoped Client  (get_user_client)           │
+    │  - Uses SUPABASE_ANON_KEY + user's JWT           │
+    │  - Enforces Row-Level Security                   │
+    │  - Used for: chat sessions, messages (per-user)  │
+    └──────────────────────────────────────────────────┘
+
+    Why two clients?
+        RLS ensures users can only see their own chat history.
+        But admin/background tasks (like re-indexing documents)
+        need full access, so they use the service role key.
+
+Used By:
+    main.py             — admin endpoints, startup tasks
+    session_manager.py  — chat session persistence
+    order_lookup.py     — order retrieval
+    sync_manuals.py     — manual sync utility
+    orchestrator.py     — policy resolution during action execution
+
+Depends On:
+    supabase-py
+
+Related Files:
+    supabase_schema.sql — database schema (tables, RLS policies)
+    .env                — SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
 """
 
 import os
@@ -12,16 +57,23 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# ── Supabase initialization ──────────────────────────────────────────
+
+# ==========================================================
+# CLIENT INITIALIZATION
+# ==========================================================
+
 _client = None
 _initialized = False
 
 
 def _get_client():
-    """Lazy-initialize Supabase client.
-    
-    Fails loudly with actionable error messages if env vars are missing.
-    Falls back to local JSON only if env vars are explicitly empty (dev mode).
+    """
+    Lazy-initialize the service-role Supabase client.
+
+    Why lazy?
+        The client is only created on first use, not at import time.
+        This prevents crashes if Supabase credentials are missing
+        during development or testing.
     """
     global _client, _initialized
 
@@ -62,11 +114,16 @@ def _get_client():
 
 
 def get_user_client(access_token: str):
-    """Initialize a Supabase client scoped to a specific user's JWT.
-    
-    This is CRITICAL for enforcing Row Level Security (RLS) in the backend.
-    Instead of using the service role key (which bypasses RLS), this uses the
-    anon key and sets the user's session token.
+    """
+    Create a user-scoped Supabase client for RLS enforcement.
+
+    Why?
+        Row-Level Security (RLS) policies in Supabase use the JWT
+        to determine which rows a user can access.  By setting the
+        user's session token on the client, all queries automatically
+        filter to that user's data.
+
+    Called By:  session_manager.py → get_user_supabase()
     """
     url = os.getenv("SUPABASE_URL", "")
     anon_key = os.getenv("SUPABASE_ANON_KEY", "")
@@ -85,10 +142,12 @@ def get_user_client(access_token: str):
         return None
 
 
-# ── Products ─────────────────────────────────────────────────────────
+# ==========================================================
+# PRODUCTS
+# ==========================================================
 
 def get_products():
-    """Fetch all products from Supabase (or return empty list)."""
+    """Fetch all products."""
     client = _get_client()
     if not client:
         return []
@@ -101,7 +160,7 @@ def get_products():
 
 
 def get_product_by_id(product_id: str):
-    """Fetch single product by ID."""
+    """Fetch a single product by ID."""
     client = _get_client()
     if not client:
         return None
@@ -139,10 +198,12 @@ def delete_product(product_id: str):
         return False
 
 
-# ── Orders ───────────────────────────────────────────────────────────
+# ==========================================================
+# ORDERS
+# ==========================================================
 
 def get_orders():
-    """Fetch all orders."""
+    """Fetch all orders, newest first."""
     client = _get_client()
     if not client:
         return []
@@ -155,19 +216,23 @@ def get_orders():
 
 
 def get_order_by_id_db(order_id: str):
-    """Fetch single order by ID, handling potential missing hyphens."""
+    """
+    Fetch a single order by ID, with hyphen-fallback.
+
+    Why the fallback?
+        Users might type "ORD2097" instead of "ORD-2097".
+        If exact match fails, we retry with a hyphen inserted.
+    """
     client = _get_client()
     if not client:
         return None
     try:
-        # Some users might type ORD2097 instead of ORD-2097.
-        # Let's try an exact match first, then a fallback if it fails.
         try:
             result = client.table("orders").select("*").eq("id", order_id).single().execute()
             return result.data
         except Exception as e:
-            # If not found (PGRST116), try inserting a hyphen if it's missing
-            if 'PGRST116' in str(e) and not '-' in order_id and order_id.startswith('ORD'):
+            # If not found (PGRST116), try inserting a hyphen
+            if 'PGRST116' in str(e) and '-' not in order_id and order_id.startswith('ORD'):
                 hyphenated = order_id.replace('ORD', 'ORD-')
                 try:
                     result2 = client.table("orders").select("*").eq("id", hyphenated).single().execute()
@@ -220,10 +285,12 @@ def delete_order(order_id: str):
         return False
 
 
-# ── Policies ─────────────────────────────────────────────────────────
+# ==========================================================
+# POLICIES
+# ==========================================================
 
 def get_policies():
-    """Fetch all policies."""
+    """Fetch all policies, newest first."""
     client = _get_client()
     if not client:
         return []
@@ -275,9 +342,17 @@ def delete_policy(policy_id: str):
 
 
 def resolve_policy(category: str, policy_type: str) -> dict:
-    """Deterministic policy resolution: category override > global fallback.
+    """
+    Deterministic policy resolution: category override > global fallback.
 
-    Returns the resolved policy dict (with 'rules' JSONB), or None.
+    Why?
+        Business policies (refund windows, replacement rules) can be
+        set globally OR overridden per product category.  This function
+        checks for a category-specific policy first, then falls back
+        to the global default.
+
+    Called By:  orchestrator.py (during action execution)
+    Returns:   Policy dict with 'rules' JSONB, or None.
     """
     client = _get_client()
     if not client:
@@ -316,7 +391,9 @@ def resolve_policy(category: str, policy_type: str) -> dict:
         return None
 
 
-# ── Knowledge Base ───────────────────────────────────────────────────
+# ==========================================================
+# KNOWLEDGE BASE
+# ==========================================================
 
 def get_knowledge_entries():
     """Fetch all knowledge base entries."""
@@ -364,7 +441,9 @@ def update_knowledge_status(entry_id: int, status: str, chunks_count: int = 0):
         return None
 
 
-# ── Refunds ──────────────────────────────────────────────────────────
+# ==========================================================
+# REFUNDS
+# ==========================================================
 
 def insert_refund(refund_data: dict):
     """Insert a refund record."""
@@ -379,10 +458,12 @@ def insert_refund(refund_data: dict):
         return None
 
 
-# ── Chat Sessions ────────────────────────────────────────────────────
+# ==========================================================
+# CHAT SESSIONS
+# ==========================================================
 
 def get_active_sessions():
-    """Fetch all active chat sessions."""
+    """Fetch all active/handed-over chat sessions."""
     client = _get_client()
     if not client:
         return []
@@ -418,7 +499,9 @@ def update_session_status(session_id: str, status: str):
         return None
 
 
-# ── Storage ──────────────────────────────────────────────────────────
+# ==========================================================
+# SUPABASE STORAGE (file uploads / downloads)
+# ==========================================================
 
 def upload_file_to_storage(bucket: str, path: str, file_bytes: bytes, content_type: str = "application/pdf"):
     """Upload a file to Supabase Storage."""

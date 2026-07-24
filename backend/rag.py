@@ -1,63 +1,83 @@
 """
-AURA RAG System — Retrieval-Augmented Generation
+AURA Backend — RAG System (Retrieval-Augmented Generation)
 
-Embeddings: Hugging Face Inference API (remote, zero local RAM) or local
-            sentence-transformers fallback.
-Vector DB:  ChromaDB with native embedding function integration.
-Chunking:   Token-based recursive splitting with page-level metadata.
-Reranking:  Cross-encoder reranking (API or local).
-Hybrid:     BM25 keyword search + vector search with Reciprocal Rank Fusion.
-Query Exp:  LLM-based query expansion for better recall.
+Purpose:
+    Converts unstructured documents (PDF, DOCX) into searchable vectors,
+    and retrieves relevant paragraphs to answer user questions.
 
-OPTIMIZED:
-- HF Inference API mode: ~100 MB RAM (no PyTorch/sentence-transformers).
-- Local mode fallback: loads models when HF_TOKEN is not set.
-- Thread-safe initialization with locks.
-- Multi-format document ingestion: PDF, DOCX, PPTX.
-- Consolidated search: single function returns both text and metadata.
-- Phase 2: PyMuPDF for better PDF extraction (replaces pypdf).
-- Phase 3: Retrieval depth widened to 20 candidates before reranking.
-- Phase 4: LLM-based query expansion for better terminology coverage.
-- Phase 5: Hybrid BM25 + vector search with Reciprocal Rank Fusion.
+Responsibilities:
+    - Text Extraction: Read PDF/DOCX/PPTX, including OCR via Tesseract.
+    - Chunking: Split text into small token-limited chunks.
+    - Vector Database: Store and query embeddings using ChromaDB.
+    - Hybrid Search: Combine Vector search + BM25 keyword search.
+    - Reranking: Re-score search results for maximum accuracy.
+
+Pipeline (Phases 3-5):
+    ┌─────────────────────────────────────────────────────┐
+    │  Query: "How to clean filter?"                      │
+    │      │                                              │
+    │      ▼                                              │
+    │  Query Expansion (LLM)  →  generates 3-5 variants   │
+    │      │                                              │
+    │      ├───────────────────────┐                      │
+    │      ▼                       ▼                      │
+    │  Vector Search (Chroma)  BM25 Keyword Search        │
+    │      │                       │                      │
+    │      └───────────┬───────────┘                      │
+    │                  ▼                                  │
+    │      Reciprocal Rank Fusion (Merging)               │
+    │                  │                                  │
+    │                  ▼                                  │
+    │      Cross-Encoder Reranking                        │
+    │                  │                                  │
+    │                  ▼                                  │
+    │      Top K Context Chunks for Responder             │
+    └─────────────────────────────────────────────────────┘
+
+    Why local models?
+        We use sentence-transformers instead of OpenAI embeddings
+        because it's free, faster, and keeps proprietary company
+        data completely private.
+
+Used By:
+    agents.py (retrieval_agent calls search_knowledge)
+
+Depends On:
+    chromadb, sentence-transformers, torch, rank_bm25, PyMuPDF, pytesseract
 """
 
 import os
+import gc
 import glob
+import time
 import logging
 import threading
-import requests as http_requests
+from datetime import datetime
 from typing import List, Dict, Optional
 
+import torch
 import chromadb
 from chromadb.config import Settings
-from dotenv import load_dotenv
 
-load_dotenv()
+from backend.config import (
+    EMBEDDING_MODEL,
+    RERANKER_MODEL,
+    CHROMA_DB_PATH,
+    CHROMA_COLLECTION,
+    DEVICE,
+    AURA_VERSION,
+    CHUNK_SIZE_TOKENS,
+    CHUNK_OVERLAP_RATIO,
+    RETRIEVAL_CANDIDATES,
+    ENABLE_QUERY_EXPANSION,
+    ENABLE_HYBRID_SEARCH,
+)
 
 logger = logging.getLogger(__name__)
 
-# ── Configuration ────────────────────────────────────────────────────
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
-RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "backend/chroma_db")
-COLLECTION_NAME = "aura_manuals"
-HF_TOKEN = os.getenv("HF_TOKEN", "")  # Hugging Face API token for remote embeddings
-
-# Chunking parameters (token-based)
-CHUNK_SIZE_TOKENS = int(os.getenv("CHUNK_SIZE_TOKENS", "350"))
-CHUNK_OVERLAP_RATIO = float(os.getenv("CHUNK_OVERLAP_RATIO", "0.15"))
-
-# Phase 3: Retrieval depth — how many candidates to fetch before reranking
-RETRIEVAL_CANDIDATES = int(os.getenv("RETRIEVAL_CANDIDATES", "20"))
-
-# Phase 4: Query expansion toggle
-ENABLE_QUERY_EXPANSION = os.getenv("ENABLE_QUERY_EXPANSION", "true").lower() == "true"
-
-# Phase 5: Hybrid search toggle
-ENABLE_HYBRID_SEARCH = os.getenv("ENABLE_HYBRID_SEARCH", "true").lower() == "true"
-
 # ── Module-level singletons ──────────────────────────────────────────
-_embedding_fn = None  # HuggingFaceAPIEmbeddingFunction or SentenceTransformerEmbeddingFunction
+_embedding_fn = None          # LocalEmbeddingFunction instance
+_embedding_dimension = None   # int — verified on startup
 _chroma_client: Optional[chromadb.PersistentClient] = None
 _collection = None
 _reranker = None
@@ -74,115 +94,57 @@ _reranker_lock = threading.Lock()
 _bm25_lock = threading.Lock()
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
-
+# ── Local Models ───────────────────────────────────────────────────────
 
 from chromadb.api.types import EmbeddingFunction
 
-class HuggingFaceAPIEmbeddingFunction(EmbeddingFunction):
-    """ChromaDB-compatible embedding function using HF Inference API.
-
-    Sends texts to the Hugging Face Inference API and receives embeddings
-    back — zero local model loading, near-zero RAM.
-
-    Uses requests.Session with urllib3 Retry adapter for automatic retry
-    on DNS resolution failures, connection drops, and transient 5xx errors
-    (common on Render and similar cloud platforms).
+class LocalEmbeddingFunction(EmbeddingFunction):
+    """ChromaDB-compatible embedding function using local sentence-transformers.
+    
+    Memory optimized: uses torch.no_grad() for all inference.
     """
-
-    def __init__(self, model_name: str, api_token: str):
-        self.model_name = model_name
-        self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
-        self.headers = {"Authorization": f"Bearer {api_token}"}
-
-        # Build a resilient HTTP session with connection pooling and retry
-        from urllib3.util.retry import Retry
-        from requests.adapters import HTTPAdapter
-
-        retry_strategy = Retry(
-            total=5,
-            backoff_factor=2,            # 2s, 4s, 8s, 16s, 32s
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["POST"],
-            raise_on_status=False,
-        )
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=2,
-            pool_maxsize=5,
-        )
-        self._session = http_requests.Session()
-        self._session.mount("https://", adapter)
-        self._session.mount("http://", adapter)
+    def __init__(self):
+        from sentence_transformers import SentenceTransformer
+        self.model = SentenceTransformer(EMBEDDING_MODEL, device=DEVICE)
+        
+        # Warmup and verify dimension
+        with torch.no_grad():
+            test_embedding = self.model.encode(["warmup"])
+        self.dimension = test_embedding.shape[1]
 
     def name(self) -> str:
-        """Return 'sentence_transformer' to match the local model's persisted name in ChromaDB.
-        This prevents an embedding function conflict error when switching between local and API mode,
-        as both use the exact same underlying BGE model."""
         return "sentence_transformer"
 
     def __call__(self, input: List[str]) -> List[List[float]]:
-        """Generate embeddings for a list of texts via the HF API."""
-        payload = {"inputs": input, "options": {"wait_for_model": True}}
-        response = self._session.post(
-            self.api_url, headers=self.headers, json=payload, timeout=60
-        )
-        response.raise_for_status()
-        embeddings = response.json()
-        # The API returns a list of embeddings (each is a list of floats)
-        # For some models, each embedding is nested [[...]], so we flatten
-        result = []
-        for emb in embeddings:
-            if isinstance(emb[0], list):
-                # Token-level embeddings — mean-pool to get sentence embedding
-                import numpy as np
-                result.append(np.mean(emb, axis=0).tolist())
-            else:
-                result.append(emb)
-        return result
+        with torch.no_grad():
+            return self.model.encode(input).tolist()
 
     def embed_query(self, input: List[str]) -> List[List[float]]:
-        """Embed query text using the same implementation as document embeddings."""
         return self.__call__(input)
 
     def embed_documents(self, input: List[str]) -> List[List[float]]:
-        """Embed documents using the same implementation."""
         return self.__call__(input)
 
 
 def _get_embedding_fn():
-    """Return singleton embedding function.
-
-    Uses HF Inference API when HF_TOKEN is set (zero RAM),
-    otherwise falls back to local sentence-transformers.
-    """
-    global _embedding_fn
+    """Return singleton local embedding function."""
+    global _embedding_fn, _embedding_dimension
     if _embedding_fn is None:
-        if HF_TOKEN:
-            logger.info(f"Loading embedding model via HF Inference API: {EMBEDDING_MODEL}")
-            _embedding_fn = HuggingFaceAPIEmbeddingFunction(
-                model_name=EMBEDDING_MODEL,
-                api_token=HF_TOKEN,
-            )
-            logger.info("Embedding function ready (HF Inference API — zero local RAM)")
-        else:
-            logger.info(f"Loading embedding model locally: {EMBEDDING_MODEL}")
-            from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-            _embedding_fn = SentenceTransformerEmbeddingFunction(
-                model_name=EMBEDDING_MODEL,
-                device="cpu",
-            )
-            logger.info("Embedding model loaded (CPU, local)")
+        logger.info(f"Loading local embedding model: {EMBEDDING_MODEL} on {DEVICE}")
+        start_time = time.time()
+        try:
+            _embedding_fn = LocalEmbeddingFunction()
+            _embedding_dimension = _embedding_fn.dimension
+            elapsed = time.time() - start_time
+            logger.info(f"Embedding model loaded successfully in {elapsed:.2f}s (dim: {_embedding_dimension})")
+        except (ImportError, RuntimeError, MemoryError, OSError) as e:
+            logger.error(f"Failed to load embedding model {EMBEDDING_MODEL}: {e}")
+            raise
     return _embedding_fn
 
 
 def _get_reranker():
-    """Load cross-encoder reranker model (thread-safe, loads once).
-
-    When HF_TOKEN is set, skips the heavy local reranker to save RAM.
-    The hybrid BM25 + vector search with RRF already provides excellent
-    ranking without a cross-encoder.
-    """
+    """Load cross-encoder reranker model (thread-safe singleton)."""
     global _reranker, _reranker_attempted
 
     with _reranker_lock:
@@ -190,23 +152,77 @@ def _get_reranker():
             return _reranker if _reranker is not False else None
 
         _reranker_attempted = True
-
-        # In API mode, skip the local reranker to save ~200MB RAM
-        if HF_TOKEN:
-            logger.info("Reranker skipped (API mode — using RRF ranking instead)")
-            _reranker = False
-            return None
-
+        logger.info(f"Loading local reranker model: {RERANKER_MODEL} on {DEVICE}")
+        start_time = time.time()
+        
         try:
             from sentence_transformers import CrossEncoder
-            logger.info(f"Loading reranker model: {RERANKER_MODEL}")
-            _reranker = CrossEncoder(RERANKER_MODEL, device="cpu")
-            logger.info("Reranker model loaded (CPU)")
-        except Exception as e:
-            logger.warning(f"Reranker unavailable (will skip reranking): {e}")
+            # Wrap the predict method in no_grad for memory efficiency
+            class MemoryEfficientCrossEncoder(CrossEncoder):
+                def predict(self, sentences, **kwargs):
+                    with torch.no_grad():
+                        return super().predict(sentences, **kwargs)
+
+            _reranker = MemoryEfficientCrossEncoder(RERANKER_MODEL, device=DEVICE)
+            
+            # Warmup
+            _reranker.predict([["warmup query", "warmup document"]])
+            
+            elapsed = time.time() - start_time
+            logger.info(f"Reranker model loaded successfully in {elapsed:.2f}s")
+            
+        except (ImportError, RuntimeError, MemoryError, OSError) as e:
+            logger.error(f"Reranker unavailable (will skip reranking): {e}")
             _reranker = False
 
     return _reranker if _reranker is not False else None
+
+
+# ── Self-Test & Validation ───────────────────────────────────────────
+
+def _run_startup_self_test():
+    """Verify all models and DB connections are functional before accepting requests."""
+    logger.info("Running RAG startup self-test...")
+    
+    try:
+        # 1. Check embedding model
+        ef = _get_embedding_fn()
+        if not ef:
+            raise RuntimeError("Embedding function is None")
+            
+        # 2. Check reranker
+        rk = _get_reranker()
+        if rk is False:
+            logger.warning("Self-test: Reranker failed to load, system will run without it")
+            
+        # 3. Check ChromaDB collection
+        global _collection
+        if not _collection:
+            raise RuntimeError("ChromaDB collection is None")
+            
+        doc_count = _collection.count()
+        
+        # 4. Check dimension compatibility
+        if "embedding_dimension" in _collection.metadata:
+            stored_dim = int(_collection.metadata["embedding_dimension"])
+            if stored_dim != _embedding_dimension:
+                raise RuntimeError(
+                    f"Dimension mismatch! Collection was created with dim {stored_dim}, "
+                    f"but {EMBEDDING_MODEL} produces dim {_embedding_dimension}. "
+                    "You must rebuild the collection."
+                )
+                
+        # 5. Dummy retrieval test
+        if doc_count > 0:
+            test_results = _collection.query(query_texts=["self test"], n_results=1)
+            if not test_results:
+                raise RuntimeError("ChromaDB retrieval returned invalid structure")
+                
+        logger.info(f"Self-test passed ✅ (Collection contains {doc_count} documents)")
+        
+    except Exception as e:
+        logger.error(f"RAG Self-test failed ❌: {e}")
+        raise RuntimeError(f"RAG startup validation failed: {e}")
 
 
 # ── Token-aware recursive chunking ──────────────────────────────────
@@ -279,7 +295,7 @@ def chunk_text_recursive(text: str) -> List[str]:
     return overlapped
 
 
-# ── Initialization ───────────────────────────────────────────────────
+# ── Initialization & Rebuild ─────────────────────────────────────────
 
 def initialize_rag_system() -> bool:
     """Initialize ChromaDB, embedding model, reranker, and BM25 at startup.
@@ -293,8 +309,7 @@ def initialize_rag_system() -> bool:
             return True
 
         try:
-            mode = "HF Inference API" if HF_TOKEN else "local embeddings"
-            logger.info(f"Initializing RAG system ({mode})...")
+            logger.info("Initializing RAG system (local embeddings)...")
 
             # 1. Load embedding model
             ef = _get_embedding_fn()
@@ -305,15 +320,24 @@ def initialize_rag_system() -> bool:
                 settings=Settings(allow_reset=True),
             )
 
+            # Metadata to verify compatibility later
+            collection_metadata = {
+                "hnsw:space": "cosine",
+                "embedding_model": EMBEDDING_MODEL,
+                "embedding_dimension": _embedding_dimension,
+                "created_at": datetime.now().isoformat(),
+                "aura_version": AURA_VERSION,
+            }
+
             _collection = _chroma_client.get_or_create_collection(
-                name=COLLECTION_NAME,
+                name=CHROMA_COLLECTION,
                 embedding_function=ef,
-                metadata={"hnsw:space": "cosine"},
+                metadata=collection_metadata,
             )
-            logger.info(f"ChromaDB initialized — collection '{COLLECTION_NAME}' "
+            logger.info(f"ChromaDB initialized — collection '{CHROMA_COLLECTION}' "
                          f"({_collection.count()} existing docs)")
 
-            # 3. Preload reranker (was previously lazy-loaded on first chat)
+            # 3. Preload reranker
             _get_reranker()
 
             # 4. Phase 5: Build BM25 index from existing ChromaDB data
@@ -326,6 +350,65 @@ def initialize_rag_system() -> bool:
         except Exception as e:
             logger.error(f"Failed to initialize RAG system: {e}", exc_info=True)
             return False
+
+
+def rebuild_collection() -> bool:
+    """
+    Rebuild the Chroma collection by re-ingesting original source documents.
+    Does NOT attempt to reuse existing Chroma data, as chunks/metadata may be incomplete.
+    """
+    global _collection, _chroma_client
+
+    logger.warning("⚠️ REBUILDING CHROMA COLLECTION FROM SOURCE DOCUMENTS ⚠️")
+    
+    with _init_lock:
+        try:
+            if not _chroma_client:
+                raise RuntimeError("Chroma client not initialized")
+                
+            # 1. Delete existing collection
+            try:
+                _chroma_client.delete_collection(name=CHROMA_COLLECTION)
+                logger.info(f"Deleted old collection '{CHROMA_COLLECTION}'")
+            except ValueError:
+                pass # Collection doesn't exist yet
+                
+            # 2. Recreate with current embedding function and new metadata
+            ef = _get_embedding_fn()
+            
+            collection_metadata = {
+                "hnsw:space": "cosine",
+                "embedding_model": EMBEDDING_MODEL,
+                "embedding_dimension": _embedding_dimension,
+                "created_at": datetime.now().isoformat(),
+                "aura_version": AURA_VERSION,
+            }
+            
+            _collection = _chroma_client.create_collection(
+                name=CHROMA_COLLECTION,
+                embedding_function=ef,
+                metadata=collection_metadata,
+            )
+            logger.info(f"Created fresh collection '{CHROMA_COLLECTION}'")
+            
+        except Exception as e:
+            logger.error(f"Failed to recreate collection: {e}")
+            return False
+            
+    # 3. We don't trigger the Supabase fetch here directly because that's handled
+    # in main.py via `_reindex_from_supabase()`. The caller should invoke that if needed.
+        
+    try:
+        # 4. Rebuild BM25 index
+        if ENABLE_HYBRID_SEARCH:
+            _rebuild_bm25_index()
+            
+        logger.info(f"Collection rebuild complete. (Did not ingest local files - use Supabase).")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error during rebuilding index: {e}")
+        return False
 
 
 # ── Phase 5: BM25 Index Management ──────────────────────────────────
@@ -801,41 +884,6 @@ def _extract_pages(file_path: str, skip_ocr: bool = False, lightweight: bool = F
 
 # ── Document ingestion ───────────────────────────────────────────────
 
-def load_manuals_into_rag() -> bool:
-    """Bulk-load all supported documents from the manuals directory."""
-    try:
-        if not _initialized:
-            if not initialize_rag_system():
-                return False
-
-        supported_extensions = ("*.pdf", "*.docx", "*.pptx", "*.txt")
-        all_files = []
-        for ext in supported_extensions:
-            all_files.extend(glob.glob(f"backend/data/manuals/{ext}"))
-
-        if not all_files:
-            logger.warning("No supported documents found in backend/data/manuals/")
-            return False
-
-        total_chunks = 0
-        for filepath in all_files:
-            try:
-                result = ingest_single_document(filepath, os.path.basename(filepath))
-                count = result.get("chunks_count", 0) if isinstance(result, dict) else result
-                total_chunks += count
-                logger.info(f"Loaded {os.path.basename(filepath)} ({count} chunks)")
-            except Exception as e:
-                logger.error(f"Failed to load {filepath}: {e}")
-                continue
-
-        logger.info(f"Loaded {len(all_files)} documents — {total_chunks} total chunks")
-        return total_chunks > 0
-
-    except Exception as e:
-        logger.error(f"Error loading manuals: {e}")
-        return False
-
-
 def ingest_single_document(file_path: str, source_name: str = "", doc_type: str = "manual", skip_ocr: bool = False, lightweight: bool = False) -> Dict:
     """
     Ingest a single document (PDF/DOCX/PPTX/TXT): extract → chunk → upsert into ChromaDB.
@@ -905,9 +953,6 @@ def ingest_single_document(file_path: str, source_name: str = "", doc_type: str 
     return {"chunks_count": len(docs), "ocr_pages": ocr_pages,
             "total_pages": total_pages, "ocr_required": ocr_required}
 
-
-# Keep backward-compatible alias
-ingest_single_pdf = ingest_single_document
 
 
 def ingest_policy_text(
@@ -1047,7 +1092,7 @@ def search_knowledge(query: str, k: int = 5) -> List[str]:
         doc_count = _collection.count() if _collection else 0
         if doc_count == 0:
             logger.warning("RAG search: collection is empty (0 documents indexed). "
-                           "Upload documents via /admin/upload or place files in backend/data/manuals/")
+                           "Upload documents via /admin/upload.")
             return []
 
         # Phase 3: Widen retrieval to RETRIEVAL_CANDIDATES (default 20)

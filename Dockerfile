@@ -14,21 +14,24 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first for better caching
 COPY requirements.txt .
 
+# Install CPU-only PyTorch first
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# NOTE: In HF API mode (HF_TOKEN set), models are NOT loaded locally.
-# The heavy sentence-transformers + torch are only needed for local mode.
-# To keep the Docker image small for Render/cloud, we skip model pre-download.
-# If you need local mode, uncomment the lines below:
-# RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5')"
-# RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+# Pre-download models to bake them into the Docker image.
+# This increases image size and initial build time but ensures 
+# zero-latency startup and completely offline operation.
+RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
+    SentenceTransformer('BAAI/bge-base-en-v1.5'); \
+    CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
 # Copy the entire project
 COPY . .
 
 # Create data directories (must exist before startup auto-ingestion)
-RUN mkdir -p backend/data/manuals backend/data/policies backend/chroma_db
+RUN mkdir -p backend/chroma_db
 
 EXPOSE 8080
 

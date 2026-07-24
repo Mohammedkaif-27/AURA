@@ -1,3 +1,4 @@
+
 # Python
 __pycache__/
 *.py[cod]
@@ -66,8 +67,9 @@ node_modules/
 dist/
 build/
 
-# Frontend (backend-only deployment)
+# Frontend and Admin (deployed separately on Vercel)
 frontend/
+admin/
 
 # Scripts
 *.ps1
