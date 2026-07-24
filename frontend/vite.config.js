@@ -7,9 +7,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/chat': 'http://localhost:8080',
-      '/products': 'http://localhost:8080',
-      '/health': 'http://localhost:8080',
+      '/chat': 'http://localhost:8000',
+      '/products': 'http://localhost:8000',
+      '/health': 'http://localhost:8000',
     },
   },
 })
