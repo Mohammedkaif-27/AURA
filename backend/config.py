@@ -48,7 +48,7 @@ RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-
 # DEVICE SELECTION
 # ==========================================================
 # Why?  Embedding and reranking models can run on GPU (CUDA) for
-# faster inference.  On most deployments (Render, Cloud Run) there
+# faster inference.  On most deployments there
 # is no GPU, so we fall back to CPU automatically.
 try:
     import torch

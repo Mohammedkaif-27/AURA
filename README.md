@@ -345,21 +345,16 @@ graph TD
         Browser["Web Browser"]
     end
 
-    subgraph Vercel ["Vercel ‒ Frontend Hosting"]
+    subgraph Frontend ["Local Frontend Server"]
         FE_Customer["Customer Chat App ‒ /frontend"]
         FE_Admin["Admin Dashboard ‒ /admin"]
     end
 
-    subgraph Render ["Render ‒ Backend Hosting"]
-        LB["Edge Load Balancer"]
-        subgraph App_Tier ["Application Container"]
-            FastAPI_App["FastAPI Server uvicorn"]
-            OrchestratorNode["Agent Orchestrator"]
-            RAG_Engine["RAG Engine"]
-        end
-        subgraph Persistent_Storage ["Persistent Volume"]
-            ChromaDB_Vol[("ChromaDB Vector Store")]
-        end
+    subgraph Backend ["Local Backend Server (FastAPI)"]
+        FastAPI_App["FastAPI Server uvicorn"]
+        OrchestratorNode["Agent Orchestrator"]
+        RAG_Engine["RAG Engine"]
+        ChromaDB_Vol[("ChromaDB Vector Store")]
     end
 
     subgraph Supabase_Cloud ["Supabase Cloud ‒ Managed"]
@@ -375,9 +370,8 @@ graph TD
 
     Browser --> FE_Customer
     Browser --> FE_Admin
-    FE_Customer -->|HTTPS| LB
-    FE_Admin -->|HTTPS| LB
-    LB --> FastAPI_App
+    FE_Customer -->|HTTP| FastAPI_App
+    FE_Admin -->|HTTP| FastAPI_App
     FastAPI_App --> OrchestratorNode
     OrchestratorNode --> RAG_Engine
     RAG_Engine --> ChromaDB_Vol
@@ -588,7 +582,7 @@ Open `http://localhost:5174`.
 | **Styling** | Tailwind CSS v4 | Utility-first CSS framework |
 | **Email** | SMTP / Resend | Transactional notification delivery |
 | **Containerization** | Docker | Production deployment packaging |
-| **Hosting** | Render + Vercel | Backend (Render) + Frontend (Vercel) |
+
 
 ---
 

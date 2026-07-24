@@ -30,8 +30,7 @@ Architecture:
         └─────────────┘
 
     Why do we re-index on startup?
-        Cloud hosts like Render (free tier) wipe the local filesystem
-        on every deploy. We store documents permanently in Supabase Storage,
+        We store documents permanently in Supabase Storage,
         and download them into local ChromaDB when the server boots.
         This saves memory compared to a managed vector DB.
 
@@ -234,7 +233,7 @@ async def startup_event():
     """Initialize services on startup (OPTIMIZED).
 
     Re-indexing runs in a background thread so the server binds its port
-    immediately — critical for Render's deploy health-check.
+    immediately.
     """
     start_time = time.time()
     logger.info("Starting AURA Backend v2.0...")
@@ -276,10 +275,10 @@ async def startup_event():
 def _reindex_from_supabase():
     """Download all documents from Supabase Storage and re-ingest into ChromaDB.
 
-    Called on startup when ChromaDB is empty (Render's ephemeral filesystem
-    wipes chroma_db/ on every deploy, but documents persist in Supabase Storage).
+    Called on startup when ChromaDB is empty (e.g., due to an ephemeral filesystem
+    or a fresh clone). We download the PDFs from Supabase Storage and index them.
 
-    MEMORY-OPTIMIZED for Render's 512 MB free tier:
+    MEMORY-OPTIMIZED for constrained environments:
     - Processes one document at a time (no bulk download).
     - Explicitly frees file bytes and forces GC after each document.
     - Skips files larger than MAX_REINDEX_FILE_MB to avoid OOM spikes.

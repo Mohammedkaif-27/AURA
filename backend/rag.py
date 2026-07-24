@@ -644,7 +644,7 @@ def _extract_pages_pdf(file_path: str, skip_ocr: bool = False, lightweight: bool
     extraction with optional OCR fallback.  ~300 MB RAM for large PDFs.
 
     When lightweight=True: uses pypdf for basic text extraction.  ~30 MB RAM.
-    Used during startup re-indexing on memory-constrained hosts (Render 512 MB).
+    Used during startup re-indexing on memory-constrained hosts.
 
     Args:
         skip_ocr: If True, skip Tesseract OCR for pages without native text.
