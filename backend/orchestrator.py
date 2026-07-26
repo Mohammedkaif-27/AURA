@@ -120,9 +120,18 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
         if session.get("order_id") and not session.get("preferred_datetime"):
             datetime_keywords = ["tomorrow", "monday", "tuesday", "wednesday", "thursday",
                                  "friday", "saturday", "sunday", "next week", "pm", "am",
-                                 "december", "january"]
+                                 "december", "january", "february", "march", "april", "may", "june",
+                                 "july", "august", "september", "october", "november"]
             if any(keyword in message.lower() for keyword in datetime_keywords):
-                session_manager.update_session(session_id, "preferred_datetime", message.strip())
+                extracted_dt = message.strip()
+                # Simple extraction hack to avoid saving the entire sentence
+                lower_msg = message.lower()
+                if " at " in lower_msg:
+                    extracted_dt = message[lower_msg.rfind(" at ") + 4:].strip()
+                elif " on " in lower_msg:
+                    extracted_dt = message[lower_msg.rfind(" on ") + 4:].strip()
+                
+                session_manager.update_session(session_id, "preferred_datetime", extracted_dt)
 
         # Get session context for agents
         session_context = session_manager.get_session_context(session_id)
@@ -242,6 +251,8 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
                 verified_response = policy_rejected_msg
                 # Reset intent so action agent doesn't trigger
                 intent = "general_query"
+                # Clear pending action so it doesn't keep triggering
+                session_manager.update_session(session_id, "pending_action", None)
             else:
                 should_skip_to_action = True
                 action_labels = {
@@ -261,7 +272,7 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
             # ── 3. Responder (THE ONLY LLM CALL) ──
             llm_start = time.time()
             try:
-                draft_response = responder_agent(context, message, session_context)
+                draft_response = responder_agent(context, message, session_context, session.get("conversation_history", []))
             except Exception as e:
                 logger.error(f"Responder failed: {e}")
                 draft_response = "I apologize, but I'm experiencing technical difficulties. Please try again later."

@@ -150,7 +150,7 @@ _INTENT_RULES = [
     # Replacement
     (r"\b(replac(?:e|ement)|swap|exchange|defective|broken|damaged|not\s*working)\b", "replacement"),
     # Service booking
-    (r"\b(book\s*(?:a\s*)?service|service\s*(?:appointment|booking|visit|request)|schedule\s*(?:a\s*)?(?:service|repair|visit)|technician|repair)\b", "service_booking"),
+    (r"\b(book\s*(?:a\s*)?(?:service|serivce)|(?:service|serivce)\s*(?:appointment|booking|visit|request)|schedule\s*(?:a\s*)?(?:service|serivce|repair|visit)|technician|repair)\b", "service_booking"),
     # Order status
     (r"\b(order\s*(?:status|track|where)|track\s*(?:my\s*)?order|where\s*(?:is|'s)\s*(?:my\s*)?order|delivery\s*status|shipping\s*status)\b", "order_status"),
     # Troubleshoot
@@ -224,11 +224,12 @@ def retrieval_agent(query: str) -> str:
 # Output: Natural language response (str)
 # ==========================================================
 
-def responder_agent(context: str, message: str, session_context: str = "") -> str:
+def responder_agent(context: str, message: str, session_context: str = "", conversation_history: list = None) -> str:
     """Generate the main response using retrieved context + LLM."""
     try:
+        current_date = datetime.now().strftime("%Y-%m-%d")
         system_prompt = (
-            "You are AURA, a professional and empathetic customer support executive.\n\n"
+            f"You are AURA, a professional and empathetic customer support executive. Today's date is {current_date}.\n\n"
             "Your job is to answer the user accurately using ONLY the information provided to you in the context.\n"
             "If the information is insufficient to answer the question, clearly state what additional information is required or recommend contacting support.\n\n"
             "CRITICAL RULES:\n"
@@ -268,8 +269,14 @@ def responder_agent(context: str, message: str, session_context: str = "") -> st
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
         ]
+        
+        if conversation_history:
+            for msg in conversation_history[-6:]:  # Last 6 messages
+                role = "assistant" if msg["role"] == "assistant" else "user"
+                messages.append({"role": role, "content": msg["message"]})
+
+        messages.append({"role": "user", "content": user_content})
 
         resp = get_completion(messages, temperature=0.3, max_tokens=1024)
         response_text = resp.strip()
@@ -443,31 +450,23 @@ def action_confirmation_agent(action_type: str) -> Optional[str]:
 # ==========================================================
 
 def generate_action_id(action_type: str) -> str:
-    """Generate unique action ID (e.g. REF-20260724-0001)."""
+    """Generate unique action ID (e.g. REF-20260724-A1B2)."""
     try:
         date_str = datetime.now().strftime("%Y%m%d")
 
         if action_type == "initiate_refund":
             prefix = "REF"
-            file_path = Path(__file__).parent / "data" / "refunds.json"
         elif action_type == "initiate_replacement":
             prefix = "REP"
-            file_path = Path(__file__).parent / "data" / "replacements.json"
         elif action_type == "book_service":
             prefix = "SRV"
-            file_path = Path(__file__).parent / "data" / "service_bookings.json"
         else:
-            return f"ACTION-{date_str}-0001"
+            prefix = "ACT"
 
-        if file_path.exists():
-            with open(file_path, "r") as f:
-                records = json.load(f)
-                today_records = [r for r in records if date_str in r.get("id", "")]
-                sequence = len(today_records) + 1
-        else:
-            sequence = 1
+        import uuid
+        sequence = uuid.uuid4().hex[:4].upper()
 
-        return f"{prefix}-{date_str}-{sequence:04d}"
+        return f"{prefix}-{date_str}-{sequence}"
 
     except Exception as e:
         logger.error(f"Error generating ID: {e}")
@@ -475,34 +474,52 @@ def generate_action_id(action_type: str) -> str:
 
 
 def save_action_data(action_type: str, action_data: dict):
-    """Persist action record to local JSON file."""
+    """Persist action record to Supabase."""
     try:
+        from . import supabase_client
         if action_type == "initiate_refund":
-            file_path = Path(__file__).parent / "data" / "refunds.json"
+            db_data = {
+                "refund_id": action_data.get("refund_id"),
+                "order_id": action_data.get("order_id"),
+                "product_name": action_data.get("product_name"),
+                "user_email": action_data.get("user_email"),
+                "user_name": action_data.get("user_name"),
+                "status": action_data.get("status", "processing")
+            }
+            return supabase_client.insert_refund(db_data) is not None
+            
         elif action_type == "initiate_replacement":
-            file_path = Path(__file__).parent / "data" / "replacements.json"
+            db_data = {
+                "replacement_id": action_data.get("replacement_id"),
+                "order_id": action_data.get("order_id"),
+                "product_name": action_data.get("product_name"),
+                "user_email": action_data.get("user_email"),
+                "user_name": action_data.get("user_name"),
+                "status": action_data.get("status", "processing")
+            }
+            return supabase_client.insert_replacement(db_data) is not None
+            
         elif action_type == "book_service":
-            file_path = Path(__file__).parent / "data" / "service_bookings.json"
+            db_data = {
+                "service_id": action_data.get("service_id"),
+                "order_id": action_data.get("order_id"),
+                "product_name": action_data.get("product_name"),
+                "user_email": action_data.get("user_email"),
+                "user_name": action_data.get("user_name"),
+                "user_address": action_data.get("user_address"),
+                "contact_number": action_data.get("contact_number"),
+                "service_center": action_data.get("service_center", "Nearest Center"),
+                "scheduled_date": action_data.get("scheduled_date", "TBD"),
+                "time_slot": action_data.get("time_slot", "TBD")
+            }
+            return supabase_client.insert_service_booking(db_data) is not None
+            
         else:
             logger.error(f"Unknown action type: {action_type}")
             return False
 
-        if file_path.exists():
-            with open(file_path, "r") as f:
-                records = json.load(f)
-        else:
-            records = []
-
-        records.append(action_data)
-
-        with open(file_path, "w") as f:
-            json.dump(records, f, indent=2)
-
-        logger.info(f"Action data saved to {file_path.name}")
-        return True
-
     except Exception as e:
-        logger.error(f"Failed to save action data: {e}")
+        logger.error(f"Failed to save action data to Supabase: {e}")
         return False
 
 
@@ -526,6 +543,7 @@ def execute_action(action: str, user_details: dict = None):
             action_data = {
                 "id": action_id,
                 "refund_id": action_id,
+                "order_id": user_details.get("order_id", None) if user_details else None,
                 "product_name": user_details.get("product_name", "N/A") if user_details else "N/A",
                 "user_email": user_details.get("email", "") if user_details else "",
                 "user_name": user_details.get("name", "") if user_details else "",
@@ -537,6 +555,7 @@ def execute_action(action: str, user_details: dict = None):
             action_data = {
                 "id": action_id,
                 "replacement_id": action_id,
+                "order_id": user_details.get("order_id", None) if user_details else None,
                 "product_name": user_details.get("product_name", "N/A") if user_details else "N/A",
                 "user_email": user_details.get("email", "") if user_details else "",
                 "user_name": user_details.get("name", "") if user_details else "",
@@ -548,6 +567,7 @@ def execute_action(action: str, user_details: dict = None):
             action_data = {
                 "id": action_id,
                 "service_id": action_id,
+                "order_id": user_details.get("order_id", None) if user_details else None,
                 "product_name": user_details.get("product_name", "N/A") if user_details else "N/A",
                 "user_email": user_details.get("email", "") if user_details else "",
                 "user_name": user_details.get("name", "") if user_details else "",

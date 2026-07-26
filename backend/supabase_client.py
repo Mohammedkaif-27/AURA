@@ -458,6 +458,32 @@ def insert_refund(refund_data: dict):
         return None
 
 
+def insert_replacement(replacement_data: dict):
+    """Insert a replacement record."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        result = client.table("replacements").insert(replacement_data).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.error(f"Error inserting replacement: {e}")
+        return None
+
+
+def insert_service_booking(booking_data: dict):
+    """Insert a service booking record."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        result = client.table("service_bookings").insert(booking_data).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.error(f"Error inserting service booking: {e}")
+        return None
+
+
 # ==========================================================
 # CHAT SESSIONS
 # ==========================================================

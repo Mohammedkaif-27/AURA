@@ -164,6 +164,10 @@ export default function Knowledge() {
             })
 
             if (!res.ok) {
+                if (res.status === 401) {
+                    await supabase.auth.signOut()
+                    window.location.href = '/'
+                }
                 const errData = await res.json().catch(() => ({}))
                 throw new Error(errData.detail || `Upload failed (${res.status})`)
             }

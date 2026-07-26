@@ -33,9 +33,10 @@ COPY . .
 # Create data directories (must exist before startup auto-ingestion)
 RUN mkdir -p backend/chroma_db
 
-EXPOSE 8080
+EXPOSE 8000
 
-ENV PORT=8080
+ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
 
 CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT}
+
