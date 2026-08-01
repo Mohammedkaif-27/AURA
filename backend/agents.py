@@ -104,7 +104,7 @@ _SKIP_RAG_EXACT = frozenset({
 # Intents that DO need RAG (they require document evidence)
 _RAG_INTENTS = frozenset({
     "troubleshoot", "product_information", "refund",
-    "replacement", "service_booking", "order_status",
+    "replacement",
 })
 
 
