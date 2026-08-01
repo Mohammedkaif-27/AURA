@@ -39,6 +39,7 @@ import os
 import json
 import logging
 import smtplib
+import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -61,6 +62,7 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "noreply@aura-support.com")
 
 EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").lower()
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 
 
 # ==========================================================
@@ -82,7 +84,33 @@ def send_email(to_email: str, subject: str, html_content: str) -> dict:
     Returns:   {"success": True/False, "message": ..., "error": ...}
     """
     try:
-        if EMAIL_PROVIDER == "resend":
+        if EMAIL_PROVIDER == "brevo":
+            if not BREVO_API_KEY:
+                logger.error("Brevo API key missing")
+                return {"success": False, "error": "Brevo API key missing"}
+
+            url = "https://api.brevo.com/v3/smtp/email"
+            headers = {
+                "accept": "application/json",
+                "api-key": BREVO_API_KEY,
+                "content-type": "application/json"
+            }
+            payload = {
+                "sender": {"email": SENDER_EMAIL, "name": "AURA Support"},
+                "to": [{"email": to_email}],
+                "subject": subject,
+                "htmlContent": html_content
+            }
+
+            resp = requests.post(url, headers=headers, json=payload)
+            if resp.status_code in (200, 201, 202):
+                logger.info(f"Email sent successfully to {to_email} via Brevo")
+                return {"success": True, "message": f"Email sent to {to_email} via Brevo", "recipient": to_email}
+            else:
+                logger.error(f"Brevo API error: {resp.text}")
+                return {"success": False, "error": "Brevo API error", "message": resp.text}
+
+        elif EMAIL_PROVIDER == "resend":
             if not RESEND_API_KEY:
                 logger.error("Resend API key missing")
                 return {"success": False, "error": "Resend API key missing"}
@@ -122,7 +150,7 @@ def send_email(to_email: str, subject: str, html_content: str) -> dict:
             html_part = MIMEText(html_content, "html")
             message.attach(html_part)
 
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=8) as server:
                 server.starttls()
                 server.login(SMTP_USERNAME, SMTP_PASSWORD)
                 server.send_message(message)
