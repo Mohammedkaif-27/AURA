@@ -169,13 +169,18 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
         search_start = time.time()
         if use_rag:
             try:
+                # Inject product name into RAG query if we know it
+                rag_query = message
+                if session.get("product_name"):
+                    rag_query = f"{session.get('product_name')} {message}"
+
                 # Single consolidated search (was previously two separate calls)
-                sources_metadata = search_knowledge_with_metadata(message, k=5)
+                sources_metadata = search_knowledge_with_metadata(rag_query, k=5)
                 context = "\n\n".join(src["text"] for src in sources_metadata) if sources_metadata else ""
 
                 # ── PHASE 1 DIAGNOSTIC: Retrieval transparency logging ──
                 logger.info("=" * 80)
-                logger.info(f"QUERY: {message}")
+                logger.info(f"QUERY: {rag_query}")
                 logger.info(f"RESULTS: {len(sources_metadata)} chunks retrieved")
                 for i, src in enumerate(sources_metadata):
                     logger.info(f"\n--- Chunk {i + 1} ---")
