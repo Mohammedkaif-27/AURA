@@ -56,6 +56,7 @@ Depends On:
 
 import time
 import logging
+import threading
 from .agents import (
     intent_agent,
     retrieval_agent,
@@ -371,14 +372,17 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
                         user_email = user_details.get("email")
                         product_name = user_details.get("product_name", "Your Product")
 
+                        def send_email_async(fn, *args):
+                            threading.Thread(target=fn, args=args, daemon=True).start()
+
                         try:
                             if action == "initiate_refund":
-                                notifications.send_refund_confirmation_email(action_id, product_name, user_email)
+                                send_email_async(notifications.send_refund_confirmation_email, action_id, product_name, user_email)
                             elif action == "initiate_replacement":
-                                notifications.send_replacement_confirmation_email(action_id, product_name, user_email)
+                                send_email_async(notifications.send_replacement_confirmation_email, action_id, product_name, user_email)
                             elif action == "book_service":
                                 booking_details = action_result.get("data", {})
-                                notifications.send_service_booking_confirmation_email(action_id, booking_details, user_email)
+                                send_email_async(notifications.send_service_booking_confirmation_email, action_id, booking_details, user_email)
                         except Exception as e:
                             logger.error(f"Email notification failed: {e}")
 
