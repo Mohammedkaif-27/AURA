@@ -109,6 +109,16 @@ flowchart TD
 **Solution:** Fixed the payload for cross-encoder batching, tuned HTTP timeouts against measured data, parallelized the Chroma variant queries via a ThreadPoolExecutor, capped the reranker at 10 candidates, and introduced a global LRU retrieval cache.  
 **Result:** Retrieval latency dropped to **~3,400ms** for a fresh cold query, and **under 350ms** for a cached repeat query.
 
+### Proactive Context & Intent-Gated Optimization
+**Problem:** In early tests, follow-up queries (e.g. "What does error E5 mean?") failed because RAG lacked product context, and transactional intents (e.g. "Book a service") suffered a 10s delay while pointlessly searching the vector DB.  
+**Solution:** AURA injects the active session's product name into follow-up RAG queries automatically. For transactional intents, RAG is completely bypassed, executing actions instantly. If context is still missing, the LLM proactively requests an Order ID instead of defaulting to a generic "contact support" fallback.  
+**Result:** Follow-up accuracy reached near 100%, and transactional booking latency dropped from ~10s to **~1.2s**.
+
+### Bypassing Hosted SMTP Firewalls (Render)
+**Problem:** Render strictly blocks outbound standard SMTP connections on ports 25, 465, and 587 to prevent spam, causing Python `smtplib` to silently hang and eventually timeout, blocking the entire HTTP response for 2.5 minutes.  
+**Solution:** Migrated email delivery to the **Brevo (Sendinblue) HTTP REST API**, executed via non-blocking asynchronous requests.  
+**Result:** Confirmation emails are delivered reliably over standard HTTPS without blocking the client thread, successfully bypassing hosting firewalls.
+
 ---
 
 ## Local Development Setup
@@ -119,6 +129,7 @@ Create a `.env` file in the root directory and populate it with the keys outline
 - **Chroma Cloud Credentials** (API Key, Tenant, Database)
 - **Groq API Key**
 - **Supabase Credentials** (URL, Anon Key, Service Role Key)
+- **Email Credentials** (Brevo API Key or standard SMTP)
 
 ### 2. Run Locally
 ```bash
