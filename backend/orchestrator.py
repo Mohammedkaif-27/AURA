@@ -131,14 +131,8 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
                                  "december", "january", "february", "march", "april", "may", "june",
                                  "july", "august", "september", "october", "november"]
             if any(keyword in message.lower() for keyword in datetime_keywords):
+                # Save the full string provided by the user so we don't lose the date!
                 extracted_dt = message.strip()
-                # Simple extraction hack to avoid saving the entire sentence
-                lower_msg = message.lower()
-                if " at " in lower_msg:
-                    extracted_dt = message[lower_msg.rfind(" at ") + 4:].strip()
-                elif " on " in lower_msg:
-                    extracted_dt = message[lower_msg.rfind(" on ") + 4:].strip()
-                
                 session_manager.update_session(session_id, "preferred_datetime", extracted_dt)
 
         # Get session context for agents
