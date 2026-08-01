@@ -201,8 +201,20 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
                     scope = p.get('scope', 'global')
                     cat = p.get('category')
                     desc = p.get('description', '')
+                    rules = p.get('rules')
+                    
                     label = f"[{ptype} Policy - {scope.capitalize()}{' ('+cat+')' if cat else ''}]"
-                    policy_texts.append(f"{label}\n{desc}")
+                    
+                    rules_str = ""
+                    if isinstance(rules, dict) and rules:
+                        rules_list = []
+                        for k, v in rules.items():
+                            if isinstance(v, bool):
+                                v = "Yes" if v else "No"
+                            rules_list.append(f"- {k.replace('_', ' ')}: {v}")
+                        rules_str = "Rules:\n" + "\n".join(rules_list) + "\n\n"
+                        
+                    policy_texts.append(f"{label}\n{rules_str}{desc}")
                 
                 if policy_texts:
                     policy_block = "\n\n--- COMPANY POLICIES ---\n" + "\n\n".join(policy_texts)
