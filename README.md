@@ -140,6 +140,6 @@ python -m uvicorn backend.main:app --reload --port 8000
 
 ## License & Contact
 
-Distributed under the MIT License.
+Distributed under the MIT License. See `LICENSE` for more information.
 
-<!-- TODO: Insert Author Name / Contact Link (e.g., LinkedIn or Email) here if desired -->
+Copyright (c) 2026 Mohammed Kaif
