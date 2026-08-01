@@ -11,13 +11,13 @@ Responsibilities:
     - Load .env at startup
     - Expose constants for: LLM models, embedding models, ChromaDB,
       chunking, retrieval, feature flags, and admin security
-    - Auto-detect GPU (CUDA) vs CPU for model inference
+    - Load API keys for HF Inference API (embeddings + reranking)
 
 Used By:
     main.py, rag.py, llm_client.py, orchestrator.py, agents.py
 
 Depends On:
-    python-dotenv, torch (optional)
+    python-dotenv
 
 Related Files:
     .env            — actual values (never committed)
@@ -39,30 +39,30 @@ logger = logging.getLogger(__name__)
 # ==========================================================
 # EMBEDDING_MODEL  — used by rag.py to convert text into vectors.
 # RERANKER_MODEL   — used by rag.py to re-score retrieved chunks.
-# Both run locally via HuggingFace sentence-transformers.
+# Both are called remotely via HuggingFace Inference API.
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
-RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
 
 
 # ==========================================================
-# DEVICE SELECTION
+# HF INFERENCE API
 # ==========================================================
-# Why?  Embedding and reranking models can run on GPU (CUDA) for
-# faster inference.  On most deployments there
-# is no GPU, so we fall back to CPU automatically.
-try:
-    import torch
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-except ImportError:
-    DEVICE = "cpu"
+# Single API key for both embedding (feature-extraction) and
+# reranking (text-classification) via HuggingFace Inference API.
+# Get a free token at https://huggingface.co/settings/tokens
+HF_API_KEY = os.getenv("HF_API_KEY", "")
 
 
 # ==========================================================
 # CHROMADB (Vector Database)
 # ==========================================================
-# CHROMA_DB_PATH       — directory where ChromaDB persists vectors.
+# CHROMA_API_KEY       — Chroma Cloud API Key.
+# CHROMA_TENANT        — Chroma Cloud Tenant ID.
+# CHROMA_DATABASE      — Chroma Cloud Database Name.
 # CHROMA_COLLECTION    — collection name inside ChromaDB.
-CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "backend/chroma_db")
+CHROMA_API_KEY = os.getenv("CHROMA_API_KEY", "")
+CHROMA_TENANT = os.getenv("CHROMA_TENANT", "")
+CHROMA_DATABASE = os.getenv("CHROMA_DATABASE", "")
 CHROMA_COLLECTION = "aura_manuals"
 
 

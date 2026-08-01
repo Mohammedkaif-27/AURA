@@ -34,16 +34,16 @@ Pipeline (Phases 3-5):
     │      Top K Context Chunks for Responder             │
     └─────────────────────────────────────────────────────┘
 
-    Why local models?
-        We use sentence-transformers instead of OpenAI embeddings
-        because it's free, faster, and keeps proprietary company
-        data completely private.
+    Why API-based inference?
+        We use HuggingFace Inference API (free tier) instead of loading
+        models locally because it keeps memory under ~512 MB, enabling
+        deployment on free-tier hosts (Render, Railway).
 
 Used By:
     agents.py (retrieval_agent calls search_knowledge)
 
 Depends On:
-    chromadb, sentence-transformers, torch, rank_bm25, PyMuPDF, pytesseract
+    chromadb, requests, rank_bm25, PyMuPDF, pytesseract
 """
 
 import os
@@ -52,19 +52,22 @@ import glob
 import time
 import logging
 import threading
+import concurrent.futures
 from datetime import datetime
 from typing import List, Dict, Optional
 
-import torch
+import requests
 import chromadb
 from chromadb.config import Settings
 
 from backend.config import (
     EMBEDDING_MODEL,
     RERANKER_MODEL,
-    CHROMA_DB_PATH,
+    CHROMA_API_KEY,
+    CHROMA_TENANT,
+    CHROMA_DATABASE,
     CHROMA_COLLECTION,
-    DEVICE,
+    HF_API_KEY,
     AURA_VERSION,
     CHUNK_SIZE_TOKENS,
     CHUNK_OVERLAP_RATIO,
@@ -75,49 +78,129 @@ from backend.config import (
 
 logger = logging.getLogger(__name__)
 
-# ── Module-level singletons ──────────────────────────────────────────
-_embedding_fn = None          # LocalEmbeddingFunction instance
+# ── Module-level singletons ────────────────────────────────────────────────────────────────
+_embedding_fn = None          # APIEmbeddingFunction instance
 _embedding_dimension = None   # int — verified on startup
-_chroma_client: Optional[chromadb.PersistentClient] = None
+_chroma_client = None
 _collection = None
-_reranker = None
-_reranker_attempted = False
 _initialized = False
 
 # Phase 5: BM25 index singletons
 _bm25_index = None
 _bm25_corpus: List[Dict] = []  # [{text, source, page, chunk_index, doc_id}, ...]
 
+# ── Retrieval Cache ──
+_retrieval_cache: Dict[str, List] = {}
+_RETRIEVAL_CACHE_MAX_SIZE = 200
+_cache_lock = threading.Lock()
+
 # Thread safety locks
 _init_lock = threading.Lock()
-_reranker_lock = threading.Lock()
 _bm25_lock = threading.Lock()
 
 
-# ── Local Models ───────────────────────────────────────────────────────
+# ── API-based Models ──────────────────────────────────────────────────────────────────
 
 from chromadb.api.types import EmbeddingFunction
 
-class LocalEmbeddingFunction(EmbeddingFunction):
-    """ChromaDB-compatible embedding function using local sentence-transformers.
-    
-    Memory optimized: uses torch.no_grad() for all inference.
+
+class APIEmbeddingFunction(EmbeddingFunction):
+    """ChromaDB-compatible embedding function using HF Inference API.
+
+    Calls the feature-extraction endpoint for the configured EMBEDDING_MODEL.
+    Includes retry/backoff for cold-start 503 and rate-limit 429 responses,
+    matching the retry pattern used in llm_client.py.
     """
+
+    _MAX_RETRIES = 4
+    _BATCH_SIZE = 32  # Max texts per API call (conservative for serverless)
+
     def __init__(self):
-        from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(EMBEDDING_MODEL, device=DEVICE)
-        
-        # Warmup and verify dimension
-        with torch.no_grad():
-            test_embedding = self.model.encode(["warmup"])
-        self.dimension = test_embedding.shape[1]
+        if not HF_API_KEY:
+            raise RuntimeError(
+                "HF_API_KEY is required for API-based embeddings. "
+                "Get a free token at https://huggingface.co/settings/tokens"
+            )
+        self.api_url = f"https://router.huggingface.co/hf-inference/models/{EMBEDDING_MODEL}/pipeline/feature-extraction"
+        self.headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+
+        # Warmup: verify API reachability and determine embedding dimension
+        logger.info(f"Connecting to HF Inference API for embedding model: {EMBEDDING_MODEL}")
+        warmup = self._embed_batch(["warmup"])
+        if not warmup or not warmup[0]:
+            raise RuntimeError(
+                f"HF Inference API returned empty embeddings for {EMBEDDING_MODEL}. "
+                "Check your HF_API_KEY and model availability."
+            )
+        self.dimension = len(warmup[0])
+
+    def _embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Embed a single batch of texts via HF Inference API with retry."""
+        payload = {
+            "inputs": texts,
+            "options": {"wait_for_model": True},
+        }
+
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                resp = requests.post(
+                    self.api_url, headers=self.headers, json=payload, timeout=120
+                )
+
+                if resp.status_code in (503, 429):
+                    wait = min(2 ** (attempt + 1), 30)
+                    logger.warning(
+                        f"HF Embedding API returned {resp.status_code}, "
+                        f"retrying in {wait}s (attempt {attempt + 1}/{self._MAX_RETRIES})..."
+                    )
+                    time.sleep(wait)
+                    continue
+
+                resp.raise_for_status()
+                result = resp.json()
+
+                if not isinstance(result, list) or len(result) == 0:
+                    raise ValueError(f"Unexpected API response shape: {type(result)}")
+
+                # Handle 3D response (token-level embeddings) → mean pool to 2D
+                if (
+                    isinstance(result[0], list)
+                    and len(result[0]) > 0
+                    and isinstance(result[0][0], list)
+                ):
+                    import numpy as np
+                    return [
+                        np.mean(token_embs, axis=0).tolist()
+                        for token_embs in result
+                    ]
+
+                # 2D response: already sentence-level embeddings
+                return result
+
+            except requests.exceptions.RequestException as e:
+                if attempt == self._MAX_RETRIES - 1:
+                    raise RuntimeError(
+                        f"HF Embedding API failed after {self._MAX_RETRIES} retries: {e}"
+                    )
+                wait = min(2 ** (attempt + 1), 30)
+                logger.warning(f"HF API request error (attempt {attempt + 1}): {e}")
+                time.sleep(wait)
+
+        raise RuntimeError("HF Embedding API failed — exhausted all retries")
 
     def name(self) -> str:
-        return "sentence_transformer"
+        return "hf_api_inference"
 
     def __call__(self, input: List[str]) -> List[List[float]]:
-        with torch.no_grad():
-            return self.model.encode(input).tolist()
+        # Batch large inputs to stay within API payload limits
+        if len(input) <= self._BATCH_SIZE:
+            return self._embed_batch(input)
+
+        all_embeddings: List[List[float]] = []
+        for i in range(0, len(input), self._BATCH_SIZE):
+            batch = input[i : i + self._BATCH_SIZE]
+            all_embeddings.extend(self._embed_batch(batch))
+        return all_embeddings
 
     def embed_query(self, input: List[str]) -> List[List[float]]:
         return self.__call__(input)
@@ -127,81 +210,99 @@ class LocalEmbeddingFunction(EmbeddingFunction):
 
 
 def _get_embedding_fn():
-    """Return singleton local embedding function."""
+    """Return singleton API embedding function."""
     global _embedding_fn, _embedding_dimension
     if _embedding_fn is None:
-        logger.info(f"Loading local embedding model: {EMBEDDING_MODEL} on {DEVICE}")
+        logger.info(f"Initializing API embedding function for: {EMBEDDING_MODEL}")
         start_time = time.time()
         try:
-            _embedding_fn = LocalEmbeddingFunction()
+            _embedding_fn = APIEmbeddingFunction()
             _embedding_dimension = _embedding_fn.dimension
             elapsed = time.time() - start_time
-            logger.info(f"Embedding model loaded successfully in {elapsed:.2f}s (dim: {_embedding_dimension})")
-        except (ImportError, RuntimeError, MemoryError, OSError) as e:
-            logger.error(f"Failed to load embedding model {EMBEDDING_MODEL}: {e}")
+            logger.info(
+                f"Embedding API ready in {elapsed:.2f}s (dim: {_embedding_dimension})"
+            )
+        except (RuntimeError, requests.exceptions.RequestException) as e:
+            logger.error(f"Failed to initialize embedding API for {EMBEDDING_MODEL}: {e}")
             raise
     return _embedding_fn
 
 
-def _get_reranker():
-    """Load cross-encoder reranker model (thread-safe singleton)."""
-    global _reranker, _reranker_attempted
+def _rerank_with_api(query: str, documents: List[str]) -> Optional[List[float]]:
+    """Rerank documents using BAAI/bge-reranker-v2-m3 via HF Inference API.
 
-    with _reranker_lock:
-        if _reranker_attempted:
-            return _reranker if _reranker is not False else None
+    Uses batched REST payload to score all documents in a single HTTP request.
+    Fails fast if unavailable to preserve graceful degradation.
+    """
+    if not HF_API_KEY or not documents:
+        return None
 
-        _reranker_attempted = True
-        logger.info(f"Loading local reranker model: {RERANKER_MODEL} on {DEVICE}")
-        start_time = time.time()
+    api_url = f"https://router.huggingface.co/hf-inference/models/{RERANKER_MODEL}"
+    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+
+    # Verified batched REST payload for HF text-classification
+    payload = {
+        "inputs": [{"text": query, "text_pair": doc} for doc in documents],
+        "options": {"wait_for_model": True},
+    }
+
+    try:
+        # 1 attempt, 5-second timeout to fail fast and prevent 210s latency
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=10)
+        resp.raise_for_status()
+
+        result = resp.json()
+        logger.debug(f"RAW RERANKER RESPONSE (len={len(result) if isinstance(result, list) else 'N/A'}): {result}")
         
-        try:
-            from sentence_transformers import CrossEncoder
-            # Wrap the predict method in no_grad for memory efficiency
-            class MemoryEfficientCrossEncoder(CrossEncoder):
-                def predict(self, sentences, **kwargs):
-                    with torch.no_grad():
-                        return super().predict(sentences, **kwargs)
+        # Response format: [[{"label": "LABEL_0", "score": 0.95}], [{"label": "LABEL_0", "score": 0.8}]]
+        # Verified response shape: [[{...}, {...}, ..., {...}]] — one outer list
+        # wrapping a single flat list of per-document scores.
+        if isinstance(result, list) and len(result) == 1 and isinstance(result[0], list):
+            result = result[0]
 
-            _reranker = MemoryEfficientCrossEncoder(RERANKER_MODEL, device=DEVICE)
-            
-            # Warmup
-            _reranker.predict([["warmup query", "warmup document"]])
-            
-            elapsed = time.time() - start_time
-            logger.info(f"Reranker model loaded successfully in {elapsed:.2f}s")
-            
-        except (ImportError, RuntimeError, MemoryError, OSError) as e:
-            logger.error(f"Reranker unavailable (will skip reranking): {e}")
-            _reranker = False
+        scores = [item.get("score", 0.0) for item in result]
 
-    return _reranker if _reranker is not False else None
+        while len(scores) < len(documents):
+            scores.append(0.0)
+
+        return scores[:len(documents)]
+
+    except Exception as e:
+        logger.warning(f"Batched Reranker API call failed: {e}")
+        return None
 
 
-# ── Self-Test & Validation ───────────────────────────────────────────
+# ── Self-Test & Validation ─────────────────────────────────────────────────────
 
 def _run_startup_self_test():
-    """Verify all models and DB connections are functional before accepting requests."""
+    """Verify API endpoints and DB connections are functional before accepting requests."""
     logger.info("Running RAG startup self-test...")
-    
+
     try:
-        # 1. Check embedding model
+        # 1. Check embedding API
         ef = _get_embedding_fn()
         if not ef:
             raise RuntimeError("Embedding function is None")
-            
-        # 2. Check reranker
-        rk = _get_reranker()
-        if rk is False:
-            logger.warning("Self-test: Reranker failed to load, system will run without it")
-            
+
+        # 2. Check reranker API (warm up — non-fatal if it fails)
+        try:
+            scores = _rerank_with_api("test query", ["test document"])
+            if scores is not None:
+                logger.info("Self-test: Reranker API is reachable")
+            else:
+                logger.warning(
+                    "Self-test: Reranker API unavailable, system will run without it"
+                )
+        except Exception as e:
+            logger.warning(f"Self-test: Reranker API check failed (non-fatal): {e}")
+
         # 3. Check ChromaDB collection
         global _collection
         if not _collection:
             raise RuntimeError("ChromaDB collection is None")
-            
+
         doc_count = _collection.count()
-        
+
         # 4. Check dimension compatibility
         if "embedding_dimension" in _collection.metadata:
             stored_dim = int(_collection.metadata["embedding_dimension"])
@@ -211,7 +312,7 @@ def _run_startup_self_test():
                     f"but {EMBEDDING_MODEL} produces dim {_embedding_dimension}. "
                     "You must rebuild the collection."
                 )
-                
+
         # 5. Dummy retrieval test
         if doc_count > 0:
             test_results = _collection.query(query_texts=["self test"], n_results=1)
@@ -309,15 +410,16 @@ def initialize_rag_system() -> bool:
             return True
 
         try:
-            logger.info("Initializing RAG system (local embeddings)...")
+            logger.info("Initializing RAG system (API-based embeddings)...")
 
-            # 1. Load embedding model
+            # 1. Initialize embedding API connection
             ef = _get_embedding_fn()
 
-            # 2. Initialize ChromaDB
-            _chroma_client = chromadb.PersistentClient(
-                path=CHROMA_DB_PATH,
-                settings=Settings(allow_reset=True),
+            # 2. Initialize ChromaDB Cloud Connection
+            _chroma_client = chromadb.CloudClient(
+                tenant=CHROMA_TENANT,
+                database=CHROMA_DATABASE,
+                api_key=CHROMA_API_KEY
             )
 
             # Metadata to verify compatibility later
@@ -337,8 +439,7 @@ def initialize_rag_system() -> bool:
             logger.info(f"ChromaDB initialized — collection '{CHROMA_COLLECTION}' "
                          f"({_collection.count()} existing docs)")
 
-            # 3. Preload reranker
-            _get_reranker()
+            # 3. Reranker — no preload needed (API calls are stateless)
 
             # 4. Phase 5: Build BM25 index from existing ChromaDB data
             if ENABLE_HYBRID_SEARCH:
@@ -428,25 +529,34 @@ def _rebuild_bm25_index():
                 logger.info("BM25 index: no documents to index")
                 return
 
-            # Fetch all documents from ChromaDB
+            # Fetch all documents from ChromaDB in chunks of 200 to avoid Cloud quota limits
             logger.info(f"Building BM25 index from {count} chunks...")
-            all_data = _collection.get(
-                include=["documents", "metadatas"],
-                limit=count,
-            )
+            all_ids, all_docs, all_metas = [], [], []
+            offset = 0
+            batch_size = 200
+            
+            while offset < count:
+                batch_data = _collection.get(
+                    include=["documents", "metadatas"],
+                    limit=batch_size,
+                    offset=offset,
+                )
+                if not batch_data or not batch_data.get("documents"):
+                    break
+                    
+                all_ids.extend(batch_data["ids"])
+                all_docs.extend(batch_data["documents"])
+                all_metas.extend(batch_data["metadatas"])
+                offset += batch_size
 
-            if not all_data or not all_data.get("documents"):
+            if not all_docs:
                 logger.warning("BM25 index: no documents returned from collection")
                 return
 
             _bm25_corpus = []
             tokenized_corpus = []
 
-            for doc_id, doc_text, meta in zip(
-                all_data["ids"],
-                all_data["documents"],
-                all_data["metadatas"],
-            ):
+            for doc_id, doc_text, meta in zip(all_ids, all_docs, all_metas):
                 _bm25_corpus.append({
                     "text": doc_text,
                     "source": meta.get("source", "unknown"),
@@ -1028,6 +1138,10 @@ def _expand_query(query: str) -> List[str]:
     if not ENABLE_QUERY_EXPANSION:
         return [query]
 
+    # Skip expansion for simple queries (e.g. fewer than 4 words)
+    if len(query.strip().split()) < 4:
+        return [query]
+
     try:
         from .llm_client import get_completion
 
@@ -1036,15 +1150,13 @@ def _expand_query(query: str) -> List[str]:
                 "role": "system",
                 "content": (
                     "You are a search query expansion assistant. "
-                    "Given a user query, generate 3-5 alternative phrasings that would help "
+                    "Given a user query, generate exactly 2 alternative phrasings that would help "
                     "find relevant information in product manuals, policy documents, and FAQs. "
                     "Include variations with:\n"
                     "- Technical terminology\n"
                     "- Common synonyms\n"
-                    "- More specific phrasing\n"
-                    "- Brand/product context\n\n"
                     "Return ONLY a JSON array of strings, nothing else.\n"
-                    "Example: [\"turbo wash feature\", \"turbo wash program mode\", \"turbo wash operation guide\"]"
+                    "Example: [\"turbo wash feature\", \"turbo wash program mode\"]"
                 ),
             },
             {
@@ -1104,13 +1216,15 @@ def search_knowledge(query: str, k: int = 5) -> List[str]:
 
         candidates = results["documents"][0]
 
-        # Rerank if model is available
-        reranker = _get_reranker()
-        if reranker and len(candidates) > k:
-            pairs = [[query, doc] for doc in candidates]
-            scores = reranker.predict(pairs)
-            ranked = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
-            return [doc for _, doc in ranked[:k]]
+        # Rerank via HF Inference API if available
+        if len(candidates) > k:
+            to_rerank = candidates[:10]
+            scores = _rerank_with_api(query, to_rerank)
+            if scores is not None:
+                ranked = sorted(
+                    zip(scores, to_rerank), key=lambda x: x[0], reverse=True
+                )
+                return [doc for _, doc in ranked[:k]]
 
         return candidates[:k]
 
@@ -1143,6 +1257,13 @@ def search_knowledge_with_metadata(query: str, k: int = 5, skip_expansion: bool 
                            "Upload documents via /admin/upload. Background indexing may still be in progress.")
             return []
 
+        # ── Exact Query Cache ──
+        cache_key = query.strip().lower()
+        with _cache_lock:
+            if cache_key in _retrieval_cache:
+                logger.info(f"[CACHE HIT] RAG retrieval skipped for query: '{cache_key}'")
+                return _retrieval_cache[cache_key][:k]
+
         # Phase 4: Expand query into variants
         if skip_expansion:
             query_variants = [query]
@@ -1153,22 +1274,22 @@ def search_knowledge_with_metadata(query: str, k: int = 5, skip_expansion: bool 
         all_vector_candidates = []
         all_bm25_candidates = []
 
-        for variant in query_variants:
-            # Vector search via ChromaDB
+        def _search_variant(variant: str):
+            v_cands = []
+            b_cands = []
             try:
                 results = _collection.query(
                     query_texts=[variant],
                     n_results=RETRIEVAL_CANDIDATES,
                     include=["documents", "metadatas", "distances"],
                 )
-
                 if results and results["documents"] and results["documents"][0]:
                     for doc, meta, dist in zip(
                         results["documents"][0],
                         results["metadatas"][0],
                         results["distances"][0],
                     ):
-                        all_vector_candidates.append({
+                        v_cands.append({
                             "text": doc,
                             "source": meta.get("source", "unknown"),
                             "page": meta.get("page", 0),
@@ -1178,10 +1299,21 @@ def search_knowledge_with_metadata(query: str, k: int = 5, skip_expansion: bool 
             except Exception as e:
                 logger.error(f"Vector search failed for variant '{variant}': {e}")
 
-            # Phase 5: BM25 search
             if ENABLE_HYBRID_SEARCH:
                 bm25_results = _bm25_search(variant, n=RETRIEVAL_CANDIDATES)
-                all_bm25_candidates.extend(bm25_results)
+                b_cands.extend(bm25_results)
+            return v_cands, b_cands
+
+        # Execute variant searches in parallel to overlap network latency
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(query_variants), 5)) as executor:
+            futures = [executor.submit(_search_variant, v) for v in query_variants]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    v_cands, b_cands = future.result()
+                    all_vector_candidates.extend(v_cands)
+                    all_bm25_candidates.extend(b_cands)
+                except Exception as e:
+                    logger.error(f"Variant search thread failed: {e}")
 
         # Deduplicate vector candidates (keep best distance per chunk text)
         seen_texts = {}
@@ -1217,19 +1349,29 @@ def search_knowledge_with_metadata(query: str, k: int = 5, skip_expansion: bool 
         if not candidates:
             return []
 
-        # Phase 3: Rerank the top candidates with cross-encoder
-        reranker = _get_reranker()
-        if reranker and len(candidates) > k:
-            # Take top 30 for reranking (enough to cover fused results)
-            to_rerank = candidates[:30]
-            pairs = [[query, c["text"]] for c in to_rerank]
-            scores = reranker.predict(pairs)
-            for c, s in zip(to_rerank, scores):
-                c["rerank_score"] = float(s)
-            to_rerank.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
+        # Phase 3: Rerank the top candidates via HF Inference API
+        if len(candidates) > k:
+            # Take top 10 for reranking (ensures < 2s latency while maintaining quality)
+            to_rerank = candidates[:10]
+            doc_texts = [c["text"] for c in to_rerank]
+            scores = _rerank_with_api(query, doc_texts)
+            if scores is not None:
+                for c, s in zip(to_rerank, scores):
+                    c["rerank_score"] = float(s)
+                to_rerank.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
             candidates = to_rerank
 
-        return candidates[:k]
+        final_results = candidates[:k]
+        
+        # ── Store in Cache ──
+        with _cache_lock:
+            if len(_retrieval_cache) >= _RETRIEVAL_CACHE_MAX_SIZE:
+                keys_to_evict = list(_retrieval_cache.keys())[: _RETRIEVAL_CACHE_MAX_SIZE // 10]
+                for k_evict in keys_to_evict:
+                    _retrieval_cache.pop(k_evict, None)
+            _retrieval_cache[cache_key] = final_results
+
+        return final_results
 
     except Exception as e:
         logger.error(f"Error searching knowledge base with metadata: {e}")

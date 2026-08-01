@@ -38,6 +38,7 @@ Thumbs.db
 *.tmp
 *.bak
 *.swp
+scratch/
 
 # Node modules
 node_modules/

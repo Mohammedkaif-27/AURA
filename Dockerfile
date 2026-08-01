@@ -14,29 +14,18 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install CPU-only PyTorch first
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Pre-download models to bake them into the Docker image.
-# This increases image size and initial build time but ensures 
-# zero-latency startup and completely offline operation.
-RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
-    SentenceTransformer('BAAI/bge-base-en-v1.5'); \
-    CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
 # Copy the entire project
 COPY . .
 
-# Create data directories (must exist before startup auto-ingestion)
-RUN mkdir -p backend/chroma_db
+# (Local ChromaDB directory is no longer needed - using Chroma Cloud)
 
 EXPOSE 8000
 
 ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
 
-CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT}
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
 

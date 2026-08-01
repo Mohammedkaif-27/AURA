@@ -51,7 +51,9 @@ import time
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Depends, Header
+import asyncio
+import random
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Depends, Header, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -62,7 +64,7 @@ from backend.config import (
     EMBEDDING_MODEL,
     RERANKER_MODEL,
     CHROMA_COLLECTION,
-    DEVICE,
+    HF_API_KEY,
     ADMIN_API_KEY,
     ENABLE_REBUILD_ENDPOINT
 )
@@ -216,6 +218,48 @@ def require_admin(user: dict = Depends(get_current_user)):
 
     raise HTTPException(status_code=403, detail="Admin access required")
 
+
+# ── WebSocket Manager for Realtime Updates ──────────────────────────
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception:
+                pass
+
+ws_manager = ConnectionManager()
+
+def broadcast_sync(message: str):
+    """Helper to broadcast from synchronous routes or threads."""
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(ws_manager.broadcast(message))
+            loop.close()
+            return
+            
+        # In a running loop (like a sync route in FastAPI), we can't block with run_until_complete
+        if loop.is_running():
+            import threading
+            threading.Thread(target=lambda: asyncio.run(ws_manager.broadcast(message))).start()
+        else:
+            loop.run_until_complete(ws_manager.broadcast(message))
+    except Exception as e:
+        logger.error(f"Broadcast error: {e}")
 
 # ── Background job tracking ─────────────────────────────────────────
 # Simple in-memory job tracker for document ingestion
@@ -381,15 +425,15 @@ def root():
 
 @app.get("/health")
 def health():
-    from backend.rag import _embedding_dimension, _reranker, _collection
+    from backend.rag import _embedding_dimension, _collection
     return {
         "status": "ok",
         "service": "AURA Backend",
         "version": "2.1.0",
         "embedding_model": EMBEDDING_MODEL,
         "embedding_dimension": _embedding_dimension,
-        "device": DEVICE,
-        "reranker": RERANKER_MODEL if _reranker else "unavailable",
+        "inference": "api" if HF_API_KEY else "unavailable",
+        "reranker": RERANKER_MODEL if HF_API_KEY else "unavailable",
         "documents": _collection.count() if _collection else 0,
         "collection": CHROMA_COLLECTION,
     }
@@ -674,6 +718,7 @@ def _run_ingestion_job(job_id: str, doc_bytes: bytes, filename: str, entry: dict
         # Update Supabase status
         if entry:
             supabase_client.update_knowledge_status(entry.get("id"), "ready", chunks_count)
+            broadcast_sync(json.dumps({"type": "NEW_DATA"}))
 
         _ingestion_jobs[job_id].update({
             "status": "ready",
@@ -905,6 +950,8 @@ def admin_create_product(product: ProductCreate, user: dict = Depends(require_ad
     result = supabase_client.upsert_product(data)
     if result is None:
         raise HTTPException(status_code=500, detail="Failed to create product.")
+    
+    broadcast_sync(json.dumps({"type": "NEW_DATA"}))
     return {"status": "created", "product": data}
 
 
@@ -1179,6 +1226,77 @@ def _ingest_policy_to_rag(policy_data: dict):
         logger.info(f"Policy {policy_data['id']} ingested into RAG")
     except Exception as e:
         logger.error(f"Failed to ingest policy {policy_data.get('id')} into RAG: {e}")
+
+
+# ── Realtime and Suggested Queries ───────────────────────────────────
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+
+@app.get("/api/suggested-queries")
+def get_suggested_queries():
+    """Generates dynamic queries based on current DB state."""
+    queries = []
+    
+    # Comprehensive customer helpline templates
+    product_templates = [
+        "My {product} is not turning on, what should I check?",
+        "How do I install or set up the {product}?",
+        "Where can I find replacement parts for my {product}?",
+        "What are the common error codes for the {product}?",
+        "What is the warranty policy for the {product}?",
+        "How do I clean and maintain my {product}?",
+        "My {product} is making a weird noise, is this normal?"
+    ]
+    
+    manual_templates = [
+        "Can you summarize the {manual} manual?",
+        "What are the safety instructions in the {manual} document?",
+        "How do I troubleshoot issues according to the {manual} manual?"
+    ]
+    
+    # 1. Get products
+    products = supabase_client.get_products()
+    if products:
+        sample_prods = random.sample(products, min(len(products), 2))
+        for p in sample_prods:
+            name = p.get('name')
+            # Pick a couple of random templates for this product
+            chosen_templates = random.sample(product_templates, 2)
+            for t in chosen_templates:
+                queries.append(t.format(product=name))
+            
+    # 2. Get PDFs
+    kb_entries = supabase_client.get_knowledge_entries()
+    if kb_entries:
+        # Only use ready documents
+        ready_docs = [doc for doc in kb_entries if doc.get('status') == 'ready']
+        if ready_docs:
+            sample_docs = random.sample(ready_docs, min(len(ready_docs), 2))
+            for doc in sample_docs:
+                filename = doc.get('file_name', '').replace('.pdf', '')
+                chosen_templates = random.sample(manual_templates, 1)
+                queries.append(chosen_templates[0].format(manual=filename))
+
+    # Ensure we return exactly 4 shuffled queries
+    random.shuffle(queries)
+    
+    # Fallback if DB is completely empty
+    if not queries:
+        queries = [
+            "What can you do?",
+            "How do I use this system?",
+            "Can you help me troubleshoot?",
+            "What products do you support?"
+        ]
+        
+    return {"queries": queries[:4]}
 
 
 # ── Entry point ──────────────────────────────────────────────────────

@@ -70,6 +70,7 @@ from .rag import search_knowledge_with_metadata
 from . import notifications
 from . import session_manager
 from . import order_lookup
+from .llm_client import detect_and_translate_to_english, translate_to_language
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +92,14 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
         # Get or create session
         session = session_manager.get_session(session_id, user)
 
-        # Add user message to conversation history
+        # Add user message to conversation history (original language)
         session_manager.add_to_conversation_history(session_id, "user", message, user)
+
+        # ── NEW: Multi-language Translation Boundary (Incoming) ──
+        original_language, english_message = detect_and_translate_to_english(message)
+        if original_language.lower() != "english":
+            logger.info(f"Language Detected: {original_language}. Translated Message: {english_message}")
+            message = english_message  # Pipeline operates entirely in English from here on
 
         # Check for order_id in message
         extracted_order_id = order_lookup.extract_order_id_from_message(message)
@@ -374,6 +381,11 @@ def process_message(message: str, session_id: str = None, user: dict = None) -> 
             }
             for src in sources_metadata
         ]
+
+        # ── NEW: Multi-language Translation Boundary (Outgoing) ──
+        if original_language.lower() != "english":
+            logger.info(f"Translating final response back to {original_language}...")
+            verified_response = translate_to_language(verified_response, original_language)
 
         # Persist assistant response
         session_manager.add_to_conversation_history(session_id, "assistant", verified_response, user, citations)

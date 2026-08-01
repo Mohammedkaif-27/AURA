@@ -19,6 +19,7 @@ export default function ChatWindow({ session: authSession, onLogout }) {
   const [sessions, setSessions] = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
+  const [suggestedQueries, setSuggestedQueries] = useState([]);
   
   const [messages, setMessages] = useState([WELCOME_MSG]);
   const [input, setInput] = useState('');
@@ -47,6 +48,43 @@ export default function ChatWindow({ session: authSession, onLogout }) {
   useEffect(() => {
     loadSessions();
   }, [loadSessions]);
+
+  // Load suggested queries and initialize WebSocket
+  const loadSuggestedQueries = useCallback(async () => {
+    try {
+      const url = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const res = await fetch(`${url}/api/suggested-queries`);
+      if (res.ok) {
+        const data = await res.json();
+        setSuggestedQueries(data.queries || []);
+      }
+    } catch (err) {
+      console.error('Failed to load suggested queries:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSuggestedQueries();
+    
+    let wsUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    wsUrl = wsUrl.replace(/^http/, 'ws');
+    
+    const ws = new WebSocket(`${wsUrl}/ws`);
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'NEW_DATA') {
+          loadSuggestedQueries();
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+    
+    return () => {
+      ws.close();
+    };
+  }, [loadSuggestedQueries]);
 
   // Load specific session
   const selectSession = async (sid) => {
@@ -352,6 +390,36 @@ export default function ChatWindow({ session: authSession, onLogout }) {
           </div>
         </div>
       </div>
+
+      {/* ── Right Sidebar (Suggested Queries) ── */}
+      <aside className="hidden xl:flex flex-col w-72 bg-bg-secondary border-l border-border h-full flex-shrink-0">
+        <div className="p-4 border-b border-border">
+          <h2 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+            <MessageSquare className="w-4 h-4 text-accent" />
+            Suggested Queries
+          </h2>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {suggestedQueries.length > 0 ? (
+            suggestedQueries.map((query, idx) => (
+              <button
+                key={idx}
+                onClick={() => {
+                  setInput(query);
+                  if (textareaRef.current) textareaRef.current.focus();
+                }}
+                className="w-full text-left p-3 rounded-xl bg-bg border border-border hover:border-accent/50 hover:bg-accent-light/30 transition-all text-sm text-text-secondary hover:text-text-primary press-scale"
+              >
+                {query}
+              </button>
+            ))
+          ) : (
+            <div className="text-center text-text-muted text-sm mt-4">
+              <p>No suggestions available.</p>
+            </div>
+          )}
+        </div>
+      </aside>
 
       <ConfirmModal 
         isOpen={!!sessionToDelete}

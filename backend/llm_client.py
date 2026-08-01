@@ -298,3 +298,69 @@ def get_completion(
         f"LLM call failed after {MAX_RETRIES} attempts "
         f"(provider={provider}): {last_error}"
     )
+
+
+# ==========================================================
+# MULTI-LANGUAGE UTILITIES
+# ==========================================================
+
+def detect_and_translate_to_english(text: str) -> tuple[str, str]:
+    """
+    Detects the language of the input text. If it is not English,
+    translates it to English.
+    Returns: (original_language, translated_english_text)
+    """
+    if not text or not text.strip():
+        return "English", text
+        
+    prompt = (
+        "You are a translation agent. Your task is to detect the language of the user's message, "
+        "and if it is not English, translate it to English.\n"
+        "Return ONLY a JSON object with this exact format:\n"
+        '{"language": "Spanish", "english_translation": "How do I turn on the TV?"}\n'
+        "If the original language is English, just return 'English' as the language and the original text as the translation.\n"
+        "Do not include any markdown formatting, just the raw JSON."
+    )
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": text}
+    ]
+    try:
+        resp = get_completion(messages, temperature=0.1, max_tokens=300)
+        resp_clean = resp.strip()
+        if resp_clean.startswith("```"):
+            resp_clean = resp_clean.split("\\n", 1)[1] if "\\n" in resp_clean else resp_clean
+            resp_clean = resp_clean.rsplit("```", 1)[0].strip()
+        
+        parsed = json.loads(resp_clean)
+        return parsed.get("language", "English"), parsed.get("english_translation", text)
+    except Exception as e:
+        logger.error(f"Failed to detect/translate language: {e}")
+        return "English", text
+
+
+def translate_to_language(text: str, target_language: str) -> str:
+    """
+    Translates English text back to the target language.
+    """
+    if not text or not text.strip():
+        return text
+        
+    if target_language.lower() == "english":
+        return text
+        
+    prompt = (
+        f"You are a helpful customer support translator. Translate the following message "
+        f"from English into {target_language}. Preserve the tone, markdown formatting, and any technical terms.\n"
+        "Return ONLY the translated text, nothing else."
+    )
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": text}
+    ]
+    try:
+        resp = get_completion(messages, temperature=0.2, max_tokens=800)
+        return resp.strip()
+    except Exception as e:
+        logger.error(f"Failed to translate to {target_language}: {e}")
+        return text
