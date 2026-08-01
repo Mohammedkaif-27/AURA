@@ -20,7 +20,6 @@ export default function ChatWindow({ session: authSession, onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isFetchingHistory, setIsFetchingHistory] = useState(false);
   const [suggestedQueries, setSuggestedQueries] = useState([]);
-  const [isServerAwake, setIsServerAwake] = useState(false);
   
   const [messages, setMessages] = useState([WELCOME_MSG]);
   const [input, setInput] = useState('');
@@ -49,20 +48,6 @@ export default function ChatWindow({ session: authSession, onLogout }) {
   useEffect(() => {
     loadSessions();
   }, [loadSessions]);
-
-  // Ping backend health to hide "waking up" banner
-  useEffect(() => {
-    const checkHealth = async () => {
-      try {
-        const url = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-        await fetch(`${url}/health`);
-        setIsServerAwake(true);
-      } catch (err) {
-        setIsServerAwake(true);
-      }
-    };
-    checkHealth();
-  }, []);
 
   // Load suggested queries and initialize WebSocket
   const loadSuggestedQueries = useCallback(async () => {
@@ -365,12 +350,6 @@ export default function ChatWindow({ session: authSession, onLogout }) {
         {/* Input */}
         <div className="flex-shrink-0 border-t border-border bg-bg px-3 sm:px-4 py-2 sm:py-3 safe-bottom">
           <div className="max-w-3xl mx-auto">
-            {!isServerAwake && (
-              <div className="mb-3 px-4 py-2 bg-accent/10 border border-accent/20 rounded-xl flex items-center justify-center gap-3 text-sm text-accent animate-pulse">
-                <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                <span>Waking up AURA backend... (Render free tier may take up to 50s)</span>
-              </div>
-            )}
             <div className="flex items-end gap-2 bg-bg-secondary rounded-2xl border border-border
                             focus-within:border-accent focus-within:ring-2 focus-within:ring-accent-glow 
                             transition-all px-3 sm:px-4 py-2">
