@@ -7,7 +7,13 @@ An agentic customer-support backend that executes real business actions under de
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104.0-009688.svg?logo=fastapi)](https://fastapi.tiangolo.com)
 [![Status: Active](https://img.shields.io/badge/Status-Active-success.svg)]()
 
-AURA is an agentic customer-support backend designed to not just answer questions, but execute real business actions—refunds, replacements, and service bookings. Unlike generic RAG chatbots, AURA is built around deterministic policy enforcement: intent classification, policy checks, and action execution happen strictly in Python code, meaning the system cannot be prompt-engineered or hallucinated into authorizing an invalid return.
+AURA is an agentic customer-support backend designed to not just answer questions, but execute real business actions—refunds, replacements, and service bookings.
+### Team
+- Mohammed Kaif (@Mohammedkaif-27)
+- Soha Kousar (@sohakousar)
+
+**Co-developed by Mohammed Kaif and Soha Kousar.**
+ Unlike generic RAG chatbots, AURA is built around deterministic policy enforcement: intent classification, policy checks, and action execution happen strictly in Python code, meaning the system cannot be prompt-engineered or hallucinated into authorizing an invalid return.
 
 **[![Live Demo — Coming Soon](https://img.shields.io/badge/Live_Demo-Coming_Soon-orange?style=for-the-badge)]()** <!-- TODO: Replace placeholder URL with the actual deployed URL -->
 
