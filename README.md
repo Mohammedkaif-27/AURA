@@ -9,8 +9,8 @@ An agentic customer-support backend that executes real business actions under de
 
 AURA is an agentic customer-support backend designed to not just answer questions, but execute real business actions—refunds, replacements, and service bookings.
 ### Team
-- Mohammed Kaif (@Mohammedkaif-27)
-- Soha Kousar (@sohakousar)
+- Shaik Mohammed Kaif (@Mohammedkaif-27)
+- Syeda Soha Kousar (@sohakousar)
 
 **Co-developed by Mohammed Kaif and Soha Kousar.**
  Unlike generic RAG chatbots, AURA is built around deterministic policy enforcement: intent classification, policy checks, and action execution happen strictly in Python code, meaning the system cannot be prompt-engineered or hallucinated into authorizing an invalid return.
